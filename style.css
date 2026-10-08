@@ -120,7 +120,7 @@ main { padding: 0 12px; max-width: 560px; margin: 0 auto; }
 .list-item small { color: var(--muted); display: block; }
 
 .field { display: flex; flex-direction: column; gap: 4px; font-size: .85rem; color: var(--muted); margin: 10px 0; flex: 1; min-width: 0; }
-.field input, .field select {
+.field input, .field select, .field textarea {
   font-size: 1rem; color: var(--text);
   background: var(--bg); border: 1px solid var(--line); border-radius: 10px;
   padding: 10px; width: 100%; min-height: 44px;
@@ -247,3 +247,22 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 .acc-row.big { font-weight: 700; font-size: 1.1rem; }
 .acc-row.plus span:last-child { color: #16a34a; }
 .acc-row.minus span:last-child { color: var(--danger); }
+
+/* Abstände */
+.gap { font-size: .85rem; color: var(--muted); margin: -2px 0 6px 14px; }
+.gap.tight { color: #b45309; font-weight: 600; }
+.gap.overlap { color: var(--danger); font-weight: 700; }
+.cell { position: relative; }
+.warn-dot { position: absolute; top: 4px; right: 4px; width: 8px; height: 8px; border-radius: 50%; }
+.warn-dot.tight { background: #f59e0b; }
+.warn-dot.overlap { background: #dc2626; }
+
+/* Mitnehmliste */
+.field textarea { font-family: inherit; resize: vertical; }
+.packing { padding: 4px 14px; }
+.packing-head { display: flex; justify-content: space-between; align-items: center; width: 100%; background: none; border: 0; padding: 10px 0; font-weight: 600; font-size: 1rem; }
+.packing-head .hint { margin: 0; }
+.pack-item { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-top: 1px solid var(--line); }
+.pack-item input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
+.pack-item.checked span { text-decoration: line-through; color: var(--muted); }
+.packing.done .packing-head { color: var(--muted); }

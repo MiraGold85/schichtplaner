@@ -160,6 +160,107 @@ function occurrencesOn(date) {
     .sort((a, b) => (isCredit(a) ? '' : a.start).localeCompare(isCredit(b) ? '' : b.start));
 }
 
+/* ---------- Abstände zwischen Terminen ---------- */
+
+const minGap = () => state.settings.minGap ?? 15;
+
+// Für jeden Termin mit Uhrzeit: Minuten Luft seit dem Ende des vorherigen (null = unbekannt)
+function dayGaps(occ) {
+  const timed = occ.filter(o => !isCredit(o) && o.start);
+  const gaps = new Map();
+  let prevEnd = null;
+  for (const o of timed) {
+    const s = toMin(o.start);
+    if (prevEnd != null) gaps.set(o, s - prevEnd);
+    if (o.end && toMin(o.end) > s) prevEnd = Math.max(prevEnd ?? 0, toMin(o.end));
+    else if (o.end) prevEnd = 24 * 60; // über Mitternacht
+  }
+  return gaps;
+}
+
+function gapLevel(gap) {
+  if (gap < 0) return 'overlap';
+  if (gap < minGap()) return 'tight';
+  return 'ok';
+}
+
+function dayWarning(occ) {
+  let worst = null;
+  for (const g of dayGaps(occ).values()) {
+    const l = gapLevel(g);
+    if (l === 'overlap') return 'overlap';
+    if (l === 'tight') worst = 'tight';
+  }
+  return worst;
+}
+
+function gapText(gap) {
+  if (gap < 0) return `⚠️ Überschneidung: ${fmtDuration(-gap)}`;
+  if (gap === 0) return '↓ direkt im Anschluss';
+  return `↓ ${fmtDuration(gap)} bis zum nächsten Termin`;
+}
+
+function fmtDuration(min) {
+  const h = Math.floor(min / 60), m = min % 60;
+  return h ? `${h} Std.${m ? ' ' + m + ' Min.' : ''}` : `${m} Min.`;
+}
+
+/* ---------- Mitnehmliste ---------- */
+
+// Abgehakte Sachen pro Tag: state.packed = { 'JJJJ-MM-TT': ['Reithelm', …] }
+function packingFor(date, occ) {
+  const items = [];
+  const seen = new Set();
+  for (const o of occ) {
+    if (isCredit(o) || isPrivate(o)) continue;
+    const emp = employerById(o.employerId);
+    for (const item of emp.items || []) {
+      const key = item.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push({ item, color: emp.color });
+    }
+  }
+  return items;
+}
+
+function togglePacked(date, item) {
+  state.packed = state.packed || {};
+  const list = state.packed[date] || [];
+  state.packed[date] = list.includes(item) ? list.filter(x => x !== item) : [...list, item];
+  // alte Tage aufräumen
+  const cutoff = addDays(todayISO(), -14);
+  for (const d of Object.keys(state.packed)) if (d < cutoff || !state.packed[d].length) delete state.packed[d];
+  save();
+}
+
+let packingOpen = null; // null = automatisch (offen, solange nicht alles abgehakt ist)
+
+function renderPacking(date, occ) {
+  const items = packingFor(date, occ);
+  if (!items.length) return null;
+  const done = (state.packed && state.packed[date]) || [];
+  const allDone = items.every(i => done.includes(i.item));
+  const open = packingOpen ?? !allDone;
+  const title = date === todayISO() ? 'Heute mitnehmen' : 'Mitnehmen';
+  const card = el('div', { class: 'card packing' + (allDone ? ' done' : '') },
+    el('button', {
+      class: 'packing-head', type: 'button',
+      onclick: () => { packingOpen = !open; renderDay(); },
+    }, el('span', {}, (allDone ? '✅ ' : '🎒 ') + title),
+      el('span', { class: 'hint' }, `${items.filter(i => done.includes(i.item)).length}/${items.length} ${open ? '▴' : '▾'}`)));
+  if (open) {
+    for (const { item, color } of items) {
+      const checked = done.includes(item);
+      card.append(el('label', { class: 'pack-item' + (checked ? ' checked' : '') },
+        el('input', Object.assign({ type: 'checkbox', onchange: () => { togglePacked(date, item); renderDay(); } }, checked ? { checked: '' } : {})),
+        el('i', { class: 'dot', style: `background:${color}` }),
+        el('span', {}, item)));
+    }
+  }
+  return card;
+}
+
 /* ---------- Stundenkonto ---------- */
 
 const daysInMonthOf = iso => new Date(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)), 0).getDate();
@@ -305,6 +406,8 @@ function renderCalendar() {
         : el('span', { class: 'pill', style: `background:${color}` }, o.start.replace(/^0/, '')));
     });
     if (occ.length > 2) cell.append(el('span', { class: 'more' }, `+${occ.length - 2}`));
+    const warn = dayWarning(occ);
+    if (warn) cell.append(el('span', { class: 'warn-dot ' + warn, title: warn === 'overlap' ? 'Überschneidung' : 'Wenig Zeit zwischen Terminen' }));
     grid.append(cell);
   }
 
@@ -318,10 +421,11 @@ function renderCalendar() {
 
 function renderDay() {
   const date = view.selected;
+  if (renderDay.last !== date) { packingOpen = null; renderDay.last = date; }
   const occ = occurrencesOn(date);
   $('day-title').textContent = date === todayISO() ? 'Heute, ' + fmtDayTitle(date).split(', ')[1] : fmtDayTitle(date);
   const total = workMinutes(occ);
-  $('day-sum').textContent = total ? fmtHours(total) : '';
+  $('day-sum').textContent = total ? fmtDuration(total) : '';
 
   const list = $('day-list');
   list.replaceChildren();
@@ -339,8 +443,12 @@ function renderDay() {
     list.append(el('div', { class: 'empty' }, 'Frei – tippe auf + um eine Schicht einzutragen.'));
     return;
   }
+  const packing = renderPacking(date, occ);
+  if (packing) list.append(packing);
+  const gaps = dayGaps(occ);
   for (const o of occ) {
     const emp = employerById(o.employerId);
+    if (gaps.has(o)) list.append(el('div', { class: 'gap ' + gapLevel(gaps.get(o)) }, gapText(gaps.get(o))));
     if (isCredit(o)) {
       list.append(el('button', {
         class: 'entry',
@@ -364,7 +472,7 @@ function renderDay() {
           isPrivate(o) ? el('span', { class: 'badge' }, 'privat') : null),
         el('div', { class: 'when' }, isPrivate(o)
           ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
-          : `${o.start} – ${o.end} Uhr · ${fmtHours(durationMin(o.start, o.end))}`),
+          : `${o.start} – ${o.end} Uhr · ${fmtDuration(durationMin(o.start, o.end))}`),
         o.note ? el('div', { class: 'note' }, o.note) : null)));
   }
 }
@@ -479,7 +587,7 @@ function pickShiftEmployer(id) {
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
   $('shift-duration').textContent = shiftType === 'work' && s && e && shiftEmployerId !== PRIVATE.id
-    ? 'Dauer: ' + fmtHours(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
+    ? 'Dauer: ' + fmtDuration(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
     : '';
   const link = $('shift-gcal');
   if (shiftType === 'work' && s && (e || shiftEmployerId === PRIVATE.id) && shiftEmployerId && $('shift-date').value) {
@@ -724,6 +832,7 @@ function openEmployerDialog(emp) {
   editingEmployer = emp || null;
   $('employer-dialog-title').textContent = emp ? 'Arbeitgeber bearbeiten' : 'Neuer Arbeitgeber';
   $('employer-name').value = emp ? emp.name : '';
+  $('employer-items').value = emp && emp.items ? emp.items.join('\n') : '';
   $('employer-rate').value = emp && emp.rate ? String(emp.rate).replace('.', ',') : '';
   $('employer-minijob').checked = !!(emp && emp.limit);
   $('employer-limit').value = emp && emp.limit ? String(emp.limit).replace('.', ',') : '';
@@ -761,7 +870,8 @@ $('employer-form').addEventListener('submit', e => {
       opening: opening ? opening / 60 : 0, noMinus: $('account-nominus').checked,
     };
   }
-  const data = { name, color: employerColor, rate: num('employer-rate'), limit, account };
+  const items = $('employer-items').value.split('\n').map(x => x.trim()).filter(Boolean);
+  const data = { name, color: employerColor, rate: num('employer-rate'), limit, account, items };
   if (editingEmployer) Object.assign(editingEmployer, data);
   else state.employers.push({ id: uid(), ...data });
   save();
@@ -1044,6 +1154,7 @@ function renderSettings() {
 
   $('reminder').value = String(state.settings.reminder ?? 60);
   $('region').value = state.settings.region || '';
+  $('min-gap').value = String(minGap());
   $('last-backup').textContent = state.lastBackup
     ? 'Letzte Sicherung: ' + new Date(state.lastBackup).toLocaleDateString('de-DE')
     : 'Noch keine Sicherung gemacht.';
@@ -1054,6 +1165,7 @@ $('add-plan').addEventListener('click', () => openPlanDialog());
 $('reminder').addEventListener('change', e => { state.settings.reminder = Number(e.target.value); save(); });
 $('region').replaceChildren(el('option', { value: '' }, '– keine Feiertage –'),
   ...Object.entries(REGIONS).map(([k, v]) => el('option', { value: k }, v)));
+$('min-gap').addEventListener('change', e => { state.settings.minGap = Number(e.target.value); save(); });
 $('region').addEventListener('change', e => {
   state.settings.region = e.target.value || null;
   save();

@@ -60,6 +60,21 @@
         <div id="plan-list"></div>
       </div>
       <div class="card">
+        <h2>Abstände zwischen Terminen</h2>
+        <p class="hint">Unter jedem Termin siehst du, wie viel Zeit bis zum nächsten bleibt. Ist es weniger als hier eingestellt, wird es orange markiert, Überschneidungen rot.</p>
+        <label class="field">Warnen bei weniger als
+          <select id="min-gap">
+            <option value="0">nur bei Überschneidung</option>
+            <option value="10">10 Minuten</option>
+            <option value="15">15 Minuten</option>
+            <option value="20">20 Minuten</option>
+            <option value="30">30 Minuten</option>
+            <option value="45">45 Minuten</option>
+            <option value="60">1 Stunde</option>
+          </select>
+        </label>
+      </div>
+      <div class="card">
         <h2>Feiertage</h2>
         <p class="hint">Feiertage werden im Kalender markiert. Fällt eine feste Wochenzeit auf einen Feiertag, entfällt sie und die Stunden werden gutgeschrieben.</p>
         <label class="field">Bundesland <select id="region"></select></label>
@@ -192,6 +207,9 @@
       <label class="field" id="limit-field" hidden>Monatliche Verdienstgrenze in €
         <input type="text" id="employer-limit" inputmode="decimal" autocomplete="off">
         <span class="opt">Wird die Grenze angehoben, trag hier einfach den neuen Betrag ein.</span>
+      </label>
+      <label class="field">Mitnehmen <span class="opt">(optional, eine Sache pro Zeile – erscheint an Arbeitstagen als Checkliste)</span>
+        <textarea id="employer-items" rows="3" placeholder="z. B.&#10;Reithelm&#10;Stiefel"></textarea>
       </label>
       <label class="check"><input type="checkbox" id="employer-account"> Stundenkonto führen <span class="opt">(Plus-/Minusstunden)</span></label>
       <div id="account-fields" hidden>
