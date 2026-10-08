@@ -59,7 +59,18 @@ const monthName = (y, m) => new Date(y, m, 1).toLocaleDateString('de-DE', { mont
 
 /* ---------- Termine eines Tages ---------- */
 
-const employerById = id => state.employers.find(e => e.id === id);
+// Private Termine (z. B. Zahnarzt) brauchen keinen Arbeitgeber und zählen nicht als Arbeitszeit
+const PRIVATE = { id: 'private', name: 'Privat', color: '#64748b', private: true };
+const isPrivate = o => o.employerId === PRIVATE.id;
+const employerById = id => id === PRIVATE.id ? PRIVATE : state.employers.find(e => e.id === id);
+
+// Private Termine dürfen ohne Ende sein – für Kalender-Export gilt dann 1 Stunde
+function endTime(o) {
+  if (o.end) return o.end;
+  const m = (toMin(o.start) + 60) % 1440;
+  return pad(Math.floor(m / 60)) + ':' + pad(m % 60);
+}
+const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + durationMin(o.start, o.end), 0);
 
 function occurrencesOn(date) {
   const list = [];
@@ -162,7 +173,8 @@ function renderCalendar() {
   }
 
   const legend = $('legend');
-  legend.replaceChildren(...state.employers.map(e =>
+  const legendItems = state.shifts.some(isPrivate) ? [...state.employers, PRIVATE] : state.employers;
+  legend.replaceChildren(...legendItems.map(e =>
     el('span', {}, el('i', { class: 'dot', style: `background:${e.color}` }), e.name)));
 
   renderDay();
@@ -172,13 +184,13 @@ function renderDay() {
   const date = view.selected;
   const occ = occurrencesOn(date);
   $('day-title').textContent = date === todayISO() ? 'Heute, ' + fmtDayTitle(date).split(', ')[1] : fmtDayTitle(date);
-  const total = occ.reduce((s, o) => s + durationMin(o.start, o.end), 0);
+  const total = workMinutes(occ);
   $('day-sum').textContent = total ? fmtHours(total) : '';
 
   const list = $('day-list');
   list.replaceChildren();
 
-  if (!state.employers.length) {
+  if (!state.employers.length && !occ.length) {
     list.append(el('div', { class: 'card' },
       el('h2', {}, 'Willkommen! 👋'),
       el('p', { class: 'hint' }, 'Leg zuerst deine Arbeitgeber an – jeder bekommt eine eigene Farbe.'),
@@ -194,8 +206,12 @@ function renderDay() {
     list.append(el('button', { class: 'entry', onclick: () => openShiftDialog(o) },
       el('span', { class: 'stripe', style: `background:${emp.color}` }),
       el('span', { class: 'body' },
-        el('span', { class: 'who' }, emp.name, o.kind === 'plan' ? el('span', { class: 'badge' }, 'fest') : null),
-        el('div', { class: 'when' }, `${o.start} – ${o.end} Uhr · ${fmtHours(durationMin(o.start, o.end))}`),
+        el('span', { class: 'who' }, isPrivate(o) ? o.title : emp.name,
+          o.kind === 'plan' ? el('span', { class: 'badge' }, 'fest') : null,
+          isPrivate(o) ? el('span', { class: 'badge' }, 'privat') : null),
+        el('div', { class: 'when' }, isPrivate(o)
+          ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
+          : `${o.start} – ${o.end} Uhr · ${fmtHours(durationMin(o.start, o.end))}`),
         o.note ? el('div', { class: 'note' }, o.note) : null)));
   }
 }
@@ -205,8 +221,9 @@ function renderDay() {
 let editing = null;        // das gerade bearbeitete Vorkommen (oder null = neu)
 let shiftEmployerId = null;
 
-function renderEmployerChips(container, selectedId, onPick) {
-  container.replaceChildren(...state.employers.map(e =>
+function renderEmployerChips(container, selectedId, onPick, withPrivate = false) {
+  const items = withPrivate ? [...state.employers, PRIVATE] : state.employers;
+  container.replaceChildren(...items.map(e =>
     el('button', {
       type: 'button',
       class: 'chip' + (e.id === selectedId ? ' active' : ''),
@@ -234,24 +251,35 @@ function recentTimes(employerId) {
 
 function pickShiftEmployer(id) {
   shiftEmployerId = id;
-  renderEmployerChips($('shift-employers'), id, pickShiftEmployer);
-  const times = recentTimes(id);
+  renderEmployerChips($('shift-employers'), id, pickShiftEmployer, true);
+  const priv = id === PRIVATE.id;
+  $('private-fields').hidden = !priv;
+  $('shift-title').required = priv;
+  $('shift-end').required = !priv;
+  $('end-opt').hidden = !priv;
+  $('shift-dialog-title').textContent = (editing ? (priv ? 'Termin' : 'Schicht') + ' bearbeiten' : (priv ? 'Privater Termin' : 'Schicht eintragen'));
+  const times = priv ? [] : recentTimes(id);
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
       type: 'button', class: 'chip',
       onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; updateShiftPreview(); },
     }, `${t.start}–${t.end}`)));
+  // bei neuen Einträgen: Arbeitgeber -> zuletzt genutzte Zeiten vorschlagen, Privat -> leere Felder
+  if (!editing) {
+    $('shift-start').value = times[0] ? times[0].start : '';
+    $('shift-end').value = times[0] ? times[0].end : '';
+  }
   updateShiftPreview();
 }
 
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
-  $('shift-duration').textContent = s && e
+  $('shift-duration').textContent = s && e && shiftEmployerId !== PRIVATE.id
     ? 'Dauer: ' + fmtHours(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
     : '';
   const link = $('shift-gcal');
-  if (s && e && shiftEmployerId && $('shift-date').value) {
-    link.href = gcalLink({ employerId: shiftEmployerId, date: $('shift-date').value, start: s, end: e, note: $('shift-note').value });
+  if (s && (e || shiftEmployerId === PRIVATE.id) && shiftEmployerId && $('shift-date').value) {
+    link.href = gcalLink({ employerId: shiftEmployerId, date: $('shift-date').value, start: s, end: e, note: $('shift-note').value, title: $('shift-title').value });
     link.hidden = false;
   } else {
     link.hidden = true;
@@ -259,23 +287,20 @@ function updateShiftPreview() {
 }
 
 function openShiftDialog(occurrence) {
-  if (!state.employers.length) { openEmployerDialog(); return; }
   editing = occurrence || null;
   const o = occurrence || {};
-  $('shift-dialog-title').textContent = occurrence ? 'Schicht bearbeiten' : 'Schicht eintragen';
   $('shift-date').value = o.date || view.selected;
   $('shift-start').value = o.start || '';
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
+  $('shift-title').value = o.title || '';
   $('shift-delete').hidden = !occurrence;
   $('plan-hint').hidden = !(occurrence && occurrence.kind === 'plan');
-  const lastUsed = state.shifts.length ? state.shifts[state.shifts.length - 1].employerId : null;
-  pickShiftEmployer(o.employerId || (employerById(lastUsed) ? lastUsed : state.employers[0].id));
-  // bei neuer Schicht direkt die zuletzt genutzten Zeiten vorschlagen
-  if (!occurrence) {
-    const t = recentTimes(shiftEmployerId)[0];
-    if (t) { $('shift-start').value = t.start; $('shift-end').value = t.end; updateShiftPreview(); }
-  }
+  // neue Einträge starten beim zuletzt genutzten Arbeitgeber (private Termine überspringen)
+  const lastWork = state.shifts.filter(s => !isPrivate(s)).pop();
+  const fallback = lastWork && employerById(lastWork.employerId) ? lastWork.employerId
+    : (state.employers[0] ? state.employers[0].id : PRIVATE.id);
+  pickShiftEmployer(o.employerId || fallback);
   $('shift-dialog').showModal();
 }
 
@@ -295,13 +320,19 @@ $('shift-form').addEventListener('submit', e => {
     end: $('shift-end').value,
     note: $('shift-note').value.trim(),
   };
-  if (!data.date || !data.start || !data.end) return;
+  if (data.employerId === PRIVATE.id) {
+    data.title = $('shift-title').value.trim();
+    if (!data.title) { toast('Bitte eintragen, was für ein Termin es ist'); return; }
+  }
+  if (!data.date || !data.start || (!data.end && data.employerId !== PRIVATE.id)) return;
   if (data.start === data.end) { toast('Beginn und Ende sind gleich'); return; }
 
   if (editing && editing.kind === 'shift') {
-    Object.assign(state.shifts.find(s => s.id === editing.id), data);
+    const target = state.shifts.find(s => s.id === editing.id);
+    delete target.title;
+    Object.assign(target, data);
   } else if (editing && editing.kind === 'plan') {
-    const unchanged = ['employerId', 'date', 'start', 'end', 'note'].every(k => (editing[k] || '') === data[k]);
+    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title'].every(k => (editing[k] || '') === data[k]);
     if (!unchanged) {
       skipPlanDate(editing.id, editing.date);
       state.shifts.push({ id: uid(), ...data });
@@ -481,6 +512,7 @@ function renderStats() {
   for (let d = 1; d <= days; d++) {
     for (const o of occurrencesOn(toISO(new Date(year, month, d)))) {
       const p = per.get(o.employerId);
+      if (!p) continue; // private Termine zählen nicht
       p.min += durationMin(o.start, o.end);
       p.count++;
     }
@@ -557,10 +589,11 @@ $('reminder').addEventListener('change', e => { state.settings.reminder = Number
 const compact = (date, time) => date.replace(/-/g, '') + 'T' + time.replace(':', '') + '00';
 
 function endDate(o) {
-  return toMin(o.end) <= toMin(o.start) ? addDays(o.date, 1) : o.date;
+  return toMin(endTime(o)) <= toMin(o.start) ? addDays(o.date, 1) : o.date;
 }
 
 function eventTitle(o) {
+  if (isPrivate(o)) return (o.title || 'Termin') + (o.note ? ' – ' + o.note : '');
   const emp = employerById(o.employerId);
   return 'Arbeit: ' + (emp ? emp.name : '') + (o.note ? ' – ' + o.note : '');
 }
@@ -569,7 +602,7 @@ function gcalLink(o) {
   const q = new URLSearchParams({
     action: 'TEMPLATE',
     text: eventTitle(o),
-    dates: compact(o.date, o.start) + '/' + compact(endDate(o), o.end),
+    dates: compact(o.date, o.start) + '/' + compact(endDate(o), endTime(o)),
     ctz: Intl.DateTimeFormat().resolvedOptions().timeZone || 'Europe/Berlin',
     details: 'Eingetragen mit dem Schichtplaner',
   });
@@ -617,7 +650,7 @@ function buildICS(months, reminder) {
         `UID:${o.id}-${o.date}@schichtplaner`,
         `DTSTAMP:${stamp}`,
         `DTSTART:${compact(o.date, o.start)}`,
-        `DTEND:${compact(endDate(o), o.end)}`,
+        `DTEND:${compact(endDate(o), endTime(o))}`,
         `SUMMARY:${icsEscape(eventTitle(o))}`);
       if (reminder > 0) {
         lines.push('BEGIN:VALARM', 'ACTION:DISPLAY', `DESCRIPTION:${icsEscape(eventTitle(o))}`, `TRIGGER:-PT${reminder}M`, 'END:VALARM');

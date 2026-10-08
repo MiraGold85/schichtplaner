@@ -93,7 +93,7 @@
     </section>
   </main>
 
-  <button class="fab" id="fab" aria-label="Schicht eintragen">+</button>
+  <button class="fab" id="fab" aria-label="Eintragen">+</button>
 
   <nav class="tabbar">
     <button data-view="calendar" class="active"><span class="ti">📅</span>Kalender</button>
@@ -106,10 +106,13 @@
     <form method="dialog" id="shift-form">
       <h2 id="shift-dialog-title">Schicht eintragen</h2>
       <div class="chips" id="shift-employers"></div>
+      <label class="field" id="private-fields" hidden>Was? <span class="opt">(z.&nbsp;B. Zahnarzt, Elternabend)</span>
+        <input type="text" id="shift-title" maxlength="80" autocomplete="off">
+      </label>
       <label class="field">Datum <input type="date" id="shift-date" required></label>
       <div class="row">
         <label class="field">Von <input type="time" id="shift-start" required></label>
-        <label class="field">Bis <input type="time" id="shift-end" required></label>
+        <label class="field">Bis <span class="opt" id="end-opt" hidden>(optional)</span><input type="time" id="shift-end" required></label>
       </div>
       <div class="chips small" id="recent-times"></div>
       <label class="field">Notiz <span class="opt">(optional, z.&nbsp;B. Kundin, Adresse)</span>
