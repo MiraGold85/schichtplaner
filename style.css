@@ -266,3 +266,10 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 .pack-item input { width: 22px; height: 22px; accent-color: var(--accent); flex: none; }
 .pack-item.checked span { text-decoration: line-through; color: var(--muted); }
 .packing.done .packing-head { color: var(--muted); }
+
+/* Symbole im Kalender (Müll, Geburtstag) */
+.cell-head { display: flex; align-items: center; justify-content: center; gap: 2px; min-height: 1.2em; }
+.cell-head .marks { font-size: .55rem; line-height: 1; letter-spacing: -1px; }
+.holiday-banner div + div { margin-top: 4px; }
+#import-list .list-item { padding: 10px 0; }
+#import-list + .btn { margin-top: 8px; }

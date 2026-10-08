@@ -12,6 +12,11 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Minijob-Grenze mit Fortschrittsbalken (Grenze in der App änderbar)
 - Stundenkonto pro Arbeitgeber: Soll pro Woche oder Monat, Startdatum, Anfangsstand, Plus-/Minusstunden
 - Urlaub und Krankheit mit Stunden-Gutschrift (auch über mehrere Tage)
+- Private Kategorien mit eigener Farbe (z. B. „Pferde“), zählen nicht als Arbeitszeit
+- Abstände zwischen Terminen mit Warnung bei zu wenig Zeit oder Überschneidung
+- Mitnehmliste pro Arbeitgeber/Kategorie als tägliche Checkliste
+- Geburtstage (jährlich, optional mit Alter)
+- Import von .ics-Kalendern, z. B. Abfuhrkalender (Müll-Symbole im Kalender)
 - Gesetzliche Feiertage aller Bundesländer – feste Wochenzeiten an Feiertagen werden gutgeschrieben
 - Eintragen in Google Kalender (einzeln oder als Serie) und Export als Kalenderdatei (.ics) mit Erinnerung
 - Datensicherung als Datei und Wiederherstellung

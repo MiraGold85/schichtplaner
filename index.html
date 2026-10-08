@@ -55,6 +55,23 @@
         <div id="employer-list"></div>
       </div>
       <div class="card">
+        <div class="card-head"><h2>Private Kategorien</h2><button class="btn small" id="add-category">+ Neu</button></div>
+        <p class="hint">Für private Termine mit eigener Farbe, z.&nbsp;B. „Pferde“ für Hufschmied und Tierarzt. Zählen nie als Arbeitszeit.</p>
+        <div id="category-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Geburtstage</h2><button class="btn small" id="add-birthday">+ Neu</button></div>
+        <p class="hint">Erscheinen jedes Jahr mit 🎂 im Kalender.</p>
+        <div id="birthday-list"></div>
+      </div>
+      <div class="card">
+        <h2>Kalender importieren</h2>
+        <p class="hint">Z.&nbsp;B. den Abfuhrkalender deiner Stadt als .ics-Datei. Die Termine erscheinen als kleine Symbole im Kalender (🟡 Gelber Sack, ⚫ Restmüll …). Dieselbe Datei nochmal importieren ersetzt die alte.</p>
+        <div id="import-list"></div>
+        <label class="btn secondary full" for="import-file">.ics-Datei auswählen</label>
+        <input type="file" id="import-file" accept=".ics,text/calendar" hidden>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>Feste Wochenzeiten</h2><button class="btn small" id="add-plan">+ Neu</button></div>
         <p class="hint">Für Jobs mit festen Tagen. Die Schichten erscheinen dann automatisch jede Woche im Kalender.</p>
         <div id="plan-list"></div>
@@ -200,6 +217,7 @@
       <h2 id="employer-dialog-title">Arbeitgeber</h2>
       <label class="field">Name <input type="text" id="employer-name" required maxlength="40" autocomplete="off"></label>
       <div class="field">Farbe <div class="colors" id="employer-colors"></div></div>
+      <div class="work-only">
       <label class="field">Stundenlohn in € <span class="opt">(optional – was bei dir ankommt; beim Minijob der Lohn laut Vertrag)</span>
         <input type="text" id="employer-rate" inputmode="decimal" placeholder="z. B. 14,50" autocomplete="off">
       </label>
@@ -208,9 +226,11 @@
         <input type="text" id="employer-limit" inputmode="decimal" autocomplete="off">
         <span class="opt">Wird die Grenze angehoben, trag hier einfach den neuen Betrag ein.</span>
       </label>
-      <label class="field">Mitnehmen <span class="opt">(optional, eine Sache pro Zeile – erscheint an Arbeitstagen als Checkliste)</span>
+      </div>
+      <label class="field">Mitnehmen <span class="opt">(optional, eine Sache pro Zeile – erscheint an Tagen mit Terminen als Checkliste)</span>
         <textarea id="employer-items" rows="3" placeholder="z. B.&#10;Reithelm&#10;Stiefel"></textarea>
       </label>
+      <div class="work-only">
       <label class="check"><input type="checkbox" id="employer-account"> Stundenkonto führen <span class="opt">(Plus-/Minusstunden)</span></label>
       <div id="account-fields" hidden>
         <div class="row">
@@ -227,6 +247,7 @@
             <input type="text" id="account-opening" placeholder="z. B. -2 oder 5,5" autocomplete="off">
           </label>
         </div>
+      </div>
       </div>
       <div class="row actions">
         <button type="button" class="btn danger" id="employer-delete" hidden>Löschen</button>
@@ -257,6 +278,21 @@
         <button type="submit" class="btn">Speichern</button>
       </div>
       <a class="gcal" id="plan-gcal" target="_blank" rel="noopener" hidden>Als Serie in Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Geburtstag -->
+  <dialog id="bday-dialog" class="sheet">
+    <form method="dialog" id="bday-form">
+      <h2>🎂 Geburtstag</h2>
+      <label class="field">Name <input type="text" id="bday-name" required maxlength="60" autocomplete="off"></label>
+      <label class="field">Geburtsdatum <input type="date" id="bday-date" required></label>
+      <label class="check"><input type="checkbox" id="bday-age"> Alter anzeigen <span class="opt">(wenn das Geburtsjahr stimmt)</span></label>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="bday-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="bday-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Speichern</button>
+      </div>
     </form>
   </dialog>
 

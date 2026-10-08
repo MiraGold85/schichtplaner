@@ -23,6 +23,7 @@ function loadState() {
 let state = loadState();
 
 function save() {
+  importIndex = null;
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
@@ -62,8 +63,12 @@ const monthName = (y, m) => new Date(y, m, 1).toLocaleDateString('de-DE', { mont
 
 // Private Termine (z. B. Zahnarzt) brauchen keinen Arbeitgeber und zählen nicht als Arbeitszeit
 const PRIVATE = { id: 'private', name: 'Privat', color: '#64748b', private: true };
-const isPrivate = o => o.employerId === PRIVATE.id;
 const employerById = id => id === PRIVATE.id ? PRIVATE : state.employers.find(e => e.id === id);
+// Private Kategorien (z. B. „Pferde“) sind wie Arbeitgeber gespeichert, aber mit private: true – zählen nie als Arbeit
+const isCat = emp => !!(emp && emp.private);
+const isPrivate = o => isCat(employerById(o.employerId));
+const workEmployers = () => state.employers.filter(e => !e.private);
+const categories = () => state.employers.filter(e => e.private);
 
 // Private Termine dürfen ohne Ende sein – für Kalender-Export gilt dann 1 Stunde
 function endTime(o) {
@@ -152,12 +157,130 @@ function occurrencesOn(date) {
     if (absent.has(p.employerId)) continue; // Urlaub/Krank ersetzt die feste Schicht
     const base = { id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, note: p.note || '' };
     // Feiertag: feste Schicht entfällt, die Stunden werden gutgeschrieben
-    if (holiday) list.push({ ...base, kind: 'holiday', holiday, credit: durationMin(p.start, p.end) });
+    if (holiday && !isCat(employerById(p.employerId))) list.push({ ...base, kind: 'holiday', holiday, credit: durationMin(p.start, p.end) });
     else list.push({ ...base, kind: 'plan' });
   }
   return list
     .filter(o => employerById(o.employerId))
     .sort((a, b) => (isCredit(a) ? '' : a.start).localeCompare(isCredit(b) ? '' : b.start));
+}
+
+/* ---------- Geburtstage ---------- */
+
+function birthdaysOn(date) {
+  const md = date.slice(5);
+  const year = Number(date.slice(0, 4));
+  const leap = new Date(year, 1, 29).getMonth() === 1;
+  return (state.birthdays || []).filter(b => {
+    const bmd = b.date.slice(5);
+    return bmd === md || (!leap && bmd === '02-29' && md === '02-28');
+  }).map(b => ({ ...b, age: b.showAge ? year - Number(b.date.slice(0, 4)) : null }));
+}
+
+/* ---------- Importierte Kalender (z. B. Abfuhrkalender) ---------- */
+
+let importIndex = null; // Datum -> [{ title, time, source }], wird nach jeder Änderung neu aufgebaut
+function importsOn(date) {
+  if (!importIndex) {
+    importIndex = new Map();
+    for (const imp of state.imports || []) {
+      for (const ev of imp.events) {
+        if (!importIndex.has(ev.d)) importIndex.set(ev.d, []);
+        importIndex.get(ev.d).push({ title: ev.t, time: ev.time || null, source: imp.name });
+      }
+    }
+    for (const list of importIndex.values()) list.sort((a, b) => (a.time || '').localeCompare(b.time || ''));
+  }
+  return importIndex.get(date) || [];
+}
+
+function eventIcon(title) {
+  const t = title.toLowerCase();
+  if (/rest/.test(t)) return '⚫';
+  if (/bio/.test(t)) return '🟤';
+  if (/gelb|wertstoff|verpack/.test(t)) return '🟡';
+  if (/papier|pappe|blau/.test(t)) return '🔵';
+  if (/glas/.test(t)) return '🟢';
+  if (/sperr/.test(t)) return '🛋️';
+  if (/schadstoff|problem/.test(t)) return '☣️';
+  if (/grün|baum|strauch|weihnacht/.test(t)) return '🌲';
+  return '📌';
+}
+
+const icsUnescape = v => v.replace(/\\n/gi, ' ').replace(/\\([,;\\])/g, '$1').trim();
+
+// Liest eine .ics-Datei: Einzeltermine und einfache Wiederholungen (täglich/wöchentlich/monatlich/jährlich)
+function parseICS(text) {
+  const lines = text.replace(/\r?\n[ \t]/g, '').split(/\r?\n/);
+  const events = [];
+  let cur = null, calName = null;
+  for (const line of lines) {
+    if (line === 'BEGIN:VEVENT') { cur = { ex: [] }; continue; }
+    if (line === 'END:VEVENT') { if (cur && cur.start) events.push(cur); cur = null; continue; }
+    const i = line.indexOf(':');
+    if (i < 0) continue;
+    const [name, ...params] = line.slice(0, i).split(';');
+    const value = line.slice(i + 1);
+    if (!cur) { if (name === 'X-WR-CALNAME') calName = icsUnescape(value); continue; }
+    if (name === 'SUMMARY') cur.title = icsUnescape(value);
+    else if (name === 'DTSTART') cur.start = parseICSDate(value);
+    else if (name === 'RRULE') cur.rrule = Object.fromEntries(value.split(';').map(x => x.split('=')));
+    else if (name === 'EXDATE') value.split(',').forEach(v => cur.ex.push(parseICSDate(v).date));
+  }
+  return { calName, events };
+}
+
+function parseICSDate(v) {
+  const m = v.match(/^(\d{4})(\d{2})(\d{2})(?:T(\d{2})(\d{2})\d{2}(Z)?)?/);
+  if (!m) return { date: null, time: null };
+  if (!m[4]) return { date: `${m[1]}-${m[2]}-${m[3]}`, time: null };
+  if (m[6]) { // UTC -> lokale Zeit
+    const d = new Date(Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]));
+    return { date: toISO(d), time: pad(d.getHours()) + ':' + pad(d.getMinutes()) };
+  }
+  return { date: `${m[1]}-${m[2]}-${m[3]}`, time: `${m[4]}:${m[5]}` };
+}
+
+function expandEvent(ev, from, to) {
+  const start = ev.start.date;
+  if (!start) return [];
+  const r = ev.rrule;
+  if (!r) return start >= from && start <= to ? [start] : [];
+  const interval = Number(r.INTERVAL || 1);
+  const until = r.UNTIL ? parseICSDate(r.UNTIL).date : to;
+  const max = r.COUNT ? Number(r.COUNT) : 2000;
+  const end = until < to ? until : to;
+  const out = [];
+  let n = 0;
+  const push = d => { n++; if (d >= from && d <= end && !ev.ex.includes(d)) out.push(d); };
+  if (r.FREQ === 'WEEKLY' && r.BYDAY) {
+    const days = r.BYDAY.split(',').map(x => ICS_DAYS.indexOf(x.slice(-2)) + 1).filter(x => x > 0).sort();
+    let weekStart = addDays(start, 1 - isoWeekday(start));
+    while (weekStart <= end && n < max) {
+      for (const wd of days) {
+        const d = addDays(weekStart, wd - 1);
+        if (d < start || d > end || n >= max) continue;
+        push(d);
+      }
+      weekStart = addDays(weekStart, 7 * interval);
+    }
+    return out;
+  }
+  const sd = fromISO(start);
+  for (let k = 0; n < max; k++) {
+    let d;
+    if (r.FREQ === 'DAILY') d = addDays(start, k * interval);
+    else if (r.FREQ === 'WEEKLY') d = addDays(start, 7 * k * interval);
+    else if (r.FREQ === 'MONTHLY' || r.FREQ === 'YEARLY') {
+      const months = r.FREQ === 'MONTHLY' ? k * interval : 12 * k * interval;
+      const x = new Date(sd.getFullYear(), sd.getMonth() + months, sd.getDate());
+      if (x.getDate() !== sd.getDate()) continue; // z. B. 31. im kurzen Monat
+      d = toISO(x);
+    } else break;
+    if (d > end) break;
+    push(d);
+  }
+  return out;
 }
 
 /* ---------- Abstände zwischen Terminen ---------- */
@@ -212,7 +335,7 @@ function packingFor(date, occ) {
   const items = [];
   const seen = new Set();
   for (const o of occ) {
-    if (isCredit(o) || isPrivate(o)) continue;
+    if (isCredit(o)) continue;
     const emp = employerById(o.employerId);
     for (const item of emp.items || []) {
       const key = item.toLowerCase();
@@ -398,7 +521,7 @@ function renderCalendar() {
         if (d.getMonth() !== view.month) { view.year = d.getFullYear(); view.month = d.getMonth(); }
         renderCalendar();
       },
-    }, el('span', { class: 'num' }, String(d.getDate())));
+    }, el('span', { class: 'cell-head' }, el('span', { class: 'num' }, String(d.getDate())), dayMarks(iso)));
     occ.slice(0, 2).forEach(o => {
       const color = employerById(o.employerId).color;
       cell.append(isCredit(o)
@@ -412,11 +535,18 @@ function renderCalendar() {
   }
 
   const legend = $('legend');
-  const legendItems = state.shifts.some(isPrivate) ? [...state.employers, PRIVATE] : state.employers;
+  const legendItems = [...workEmployers(), ...categories(), ...(state.shifts.some(o => o.employerId === PRIVATE.id) ? [PRIVATE] : [])];
   legend.replaceChildren(...legendItems.map(e =>
     el('span', {}, el('i', { class: 'dot', style: `background:${e.color}` }), e.name)));
 
   renderDay();
+}
+
+// kleine Symbole neben dem Datum: Müll, Geburtstag
+function dayMarks(iso) {
+  const icons = [...new Set(importsOn(iso).map(e => eventIcon(e.title)))];
+  if (birthdaysOn(iso).length) icons.unshift('🎂');
+  return icons.length ? el('span', { class: 'marks' }, icons.slice(0, 3).join('')) : null;
 }
 
 function renderDay() {
@@ -429,8 +559,12 @@ function renderDay() {
 
   const list = $('day-list');
   list.replaceChildren();
+  const infos = [];
   const holiday = holidayName(date);
-  if (holiday) list.append(el('div', { class: 'holiday-banner' }, `🎉 Feiertag: ${holiday}`));
+  if (holiday) infos.push(`🎉 Feiertag: ${holiday}`);
+  for (const b of birthdaysOn(date)) infos.push(`🎂 ${b.name}` + (b.age != null ? ` wird ${b.age}` : ' hat Geburtstag'));
+  for (const ev of importsOn(date)) infos.push(`${eventIcon(ev.title)} ${ev.title}` + (ev.time ? ` · ${ev.time} Uhr` : ''));
+  if (infos.length) list.append(el('div', { class: 'holiday-banner' }, ...infos.map(t => el('div', {}, t))));
 
   if (!state.employers.length && !occ.length) {
     list.append(el('div', { class: 'card' },
@@ -440,7 +574,7 @@ function renderDay() {
     return;
   }
   if (!occ.length) {
-    list.append(el('div', { class: 'empty' }, 'Frei – tippe auf + um eine Schicht einzutragen.'));
+    list.append(el('div', { class: 'empty' }, 'Keine Termine – tippe auf + um etwas einzutragen.'));
     return;
   }
   const packing = renderPacking(date, occ);
@@ -467,9 +601,9 @@ function renderDay() {
     list.append(el('button', { class: 'entry', onclick: () => openShiftDialog(o) },
       el('span', { class: 'stripe', style: `background:${emp.color}` }),
       el('span', { class: 'body' },
-        el('span', { class: 'who' }, isPrivate(o) ? o.title : emp.name,
+        el('span', { class: 'who' }, isPrivate(o) ? (o.title || emp.name) : emp.name,
           o.kind === 'plan' ? el('span', { class: 'badge' }, 'fest') : null,
-          isPrivate(o) ? el('span', { class: 'badge' }, 'privat') : null),
+          isPrivate(o) && (o.title || emp.id === PRIVATE.id) ? el('span', { class: 'badge' }, emp.id === PRIVATE.id ? 'privat' : emp.name) : null),
         el('div', { class: 'when' }, isPrivate(o)
           ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
           : `${o.start} – ${o.end} Uhr · ${fmtDuration(durationMin(o.start, o.end))}`),
@@ -510,7 +644,7 @@ function absenceDays(empId, from, until) {
 }
 
 function setShiftType(type) {
-  const priv = shiftEmployerId === PRIVATE.id;
+  const priv = isCat(employerById(shiftEmployerId));
   shiftType = priv ? 'work' : type;
   const absence = shiftType !== 'work';
   $('shift-type').hidden = priv;
@@ -534,7 +668,7 @@ $('shift-type').addEventListener('click', e => {
 });
 
 function renderEmployerChips(container, selectedId, onPick, withPrivate = false) {
-  const items = withPrivate ? [...state.employers, PRIVATE] : state.employers;
+  const items = [...workEmployers(), ...categories(), ...(withPrivate ? [PRIVATE] : [])];
   container.replaceChildren(...items.map(e =>
     el('button', {
       type: 'button',
@@ -564,13 +698,13 @@ function recentTimes(employerId) {
 function pickShiftEmployer(id) {
   shiftEmployerId = id;
   renderEmployerChips($('shift-employers'), id, pickShiftEmployer, true);
-  const priv = id === PRIVATE.id;
+  const priv = isCat(employerById(id));
   $('private-fields').hidden = !priv;
-  $('shift-title').required = priv;
+  $('shift-title').required = id === PRIVATE.id; // bei Kategorien reicht der Kategoriename
   $('shift-end').required = !priv;
   $('end-opt').hidden = !priv;
   $('shift-dialog-title').textContent = editing ? (priv ? 'Termin' : 'Eintrag') + ' bearbeiten' : (priv ? 'Privater Termin' : 'Eintragen');
-  const times = priv ? [] : recentTimes(id);
+  const times = id === PRIVATE.id ? [] : recentTimes(id);
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
       type: 'button', class: 'chip',
@@ -586,11 +720,12 @@ function pickShiftEmployer(id) {
 
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
-  $('shift-duration').textContent = shiftType === 'work' && s && e && shiftEmployerId !== PRIVATE.id
+  const priv = isCat(employerById(shiftEmployerId));
+  $('shift-duration').textContent = shiftType === 'work' && s && e && !priv
     ? 'Dauer: ' + fmtDuration(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
     : '';
   const link = $('shift-gcal');
-  if (shiftType === 'work' && s && (e || shiftEmployerId === PRIVATE.id) && shiftEmployerId && $('shift-date').value) {
+  if (shiftType === 'work' && s && (e || priv) && shiftEmployerId && $('shift-date').value) {
     link.href = gcalLink({ employerId: shiftEmployerId, date: $('shift-date').value, start: s, end: e, note: $('shift-note').value, title: $('shift-title').value });
     link.hidden = false;
   } else {
@@ -614,7 +749,7 @@ function openShiftDialog(occurrence) {
   // neue Einträge starten beim zuletzt genutzten Arbeitgeber (private Termine überspringen)
   const lastWork = state.shifts.filter(s => !isPrivate(s) && !s.absence).pop();
   const fallback = lastWork && employerById(lastWork.employerId) ? lastWork.employerId
-    : (state.employers[0] ? state.employers[0].id : PRIVATE.id);
+    : (workEmployers()[0] || categories()[0] || PRIVATE).id;
   pickShiftEmployer(o.employerId || fallback);
   $('shift-dialog').showModal();
 }
@@ -673,11 +808,12 @@ $('shift-form').addEventListener('submit', e => {
     end: $('shift-end').value,
     note: $('shift-note').value.trim(),
   };
-  if (data.employerId === PRIVATE.id) {
+  const priv = isCat(employerById(data.employerId));
+  if (priv) {
     data.title = $('shift-title').value.trim();
-    if (!data.title) { toast('Bitte eintragen, was für ein Termin es ist'); return; }
+    if (!data.title && data.employerId === PRIVATE.id) { toast('Bitte eintragen, was für ein Termin es ist'); return; }
   }
-  if (!data.date || !data.start || (!data.end && data.employerId !== PRIVATE.id)) return;
+  if (!data.date || !data.start || (!data.end && !priv)) return;
   if (data.start === data.end) { toast('Beginn und Ende sind gleich'); return; }
 
   if (editing && editing.kind === 'shift') {
@@ -734,7 +870,7 @@ function openCopyDialog(source) {
   const d = fromISO(source.date);
   copyView.year = d.getFullYear(); copyView.month = d.getMonth();
   const emp = employerById(source.employerId);
-  const name = isPrivate(source) ? source.title : emp.name;
+  const name = isPrivate(source) ? (source.title || emp.name) : emp.name;
   const time = source.end ? `${source.start}–${source.end} Uhr` : `${source.start} Uhr`;
   $('copy-summary').textContent = `${name} · ${time} (vom ${fmtShortDate(source.date)})`;
   $('copy-weeks').replaceChildren(...[1, 2, 3, 4, 6, 8].map(n =>
@@ -793,7 +929,7 @@ $('copy-form').addEventListener('submit', e => {
     const exists = occurrencesOn(date).some(o => !isCredit(o) && o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
     if (exists) continue;
     const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', note: src.note || '' };
-    if (isPrivate(src)) copy.title = src.title;
+    if (isPrivate(src) && src.title) copy.title = src.title;
     state.shifts.push(copy);
     added++;
   }
@@ -828,9 +964,16 @@ function renderColorPicker() {
     })));
 }
 
-function openEmployerDialog(emp) {
+let editingIsCategory = false;
+
+function openEmployerDialog(emp, asCategory = false) {
   editingEmployer = emp || null;
-  $('employer-dialog-title').textContent = emp ? 'Arbeitgeber bearbeiten' : 'Neuer Arbeitgeber';
+  editingIsCategory = emp ? isCat(emp) : asCategory;
+  $('employer-dialog-title').textContent = editingIsCategory
+    ? (emp ? 'Kategorie bearbeiten' : 'Neue private Kategorie')
+    : (emp ? 'Arbeitgeber bearbeiten' : 'Neuer Arbeitgeber');
+  document.querySelectorAll('#employer-form .work-only').forEach(n => { n.hidden = editingIsCategory; });
+  $('employer-name').placeholder = editingIsCategory ? 'z. B. Pferde, Arzt, Familie' : '';
   $('employer-name').value = emp ? emp.name : '';
   $('employer-items').value = emp && emp.items ? emp.items.join('\n') : '';
   $('employer-rate').value = emp && emp.rate ? String(emp.rate).replace('.', ',') : '';
@@ -857,6 +1000,16 @@ $('employer-form').addEventListener('submit', e => {
   e.preventDefault();
   const name = $('employer-name').value.trim();
   if (!name) return;
+  if (editingIsCategory) {
+    const items = $('employer-items').value.split('\n').map(x => x.trim()).filter(Boolean);
+    const data = { name, color: employerColor, items, private: true };
+    if (editingEmployer) Object.assign(editingEmployer, data);
+    else state.employers.push({ id: uid(), ...data });
+    save();
+    $('employer-dialog').close();
+    render();
+    return;
+  }
   const num = id => { const v = parseFloat(String($(id).value).replace(',', '.')); return isFinite(v) && v > 0 ? v : null; };
   const limit = $('employer-minijob').checked ? num('employer-limit') : null;
   if ($('employer-minijob').checked && !limit) { toast('Bitte die Verdienstgrenze eintragen'); return; }
@@ -1018,7 +1171,7 @@ function renderStats() {
   // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
   const memo = new Map();
   const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
-  const per = new Map(state.employers.map(e => [e.id, { min: 0, count: 0, credit: 0 }]));
+  const per = new Map(workEmployers().map(e => [e.id, { min: 0, count: 0, credit: 0 }]));
   for (let d = 1; d <= days; d++) {
     for (const o of occ(toISO(new Date(year, month, d)))) {
       const p = per.get(o.employerId);
@@ -1031,7 +1184,7 @@ function renderStats() {
 
   const box = $('stats');
   box.replaceChildren();
-  if (!state.employers.length) {
+  if (!workEmployers().length) {
     box.append(el('div', { class: 'empty' }, 'Noch keine Arbeitgeber angelegt.'));
     return;
   }
@@ -1039,7 +1192,7 @@ function renderStats() {
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
   let totalMin = 0, totalMoney = 0, anyRate = false;
   const card = el('div', { class: 'card' });
-  for (const e of state.employers) {
+  for (const e of workEmployers()) {
     const p = per.get(e.id);
     totalMin += p.min;
     let money = null;
@@ -1057,7 +1210,7 @@ function renderStats() {
   box.append(card);
 
   // Minijob-Grenze: Balken pro Arbeitgeber mit Verdienstgrenze
-  for (const e of state.employers.filter(x => x.limit)) {
+  for (const e of workEmployers().filter(x => x.limit)) {
     const limitCard = el('div', { class: 'card' }, el('h2', {}, `Minijob-Grenze · ${e.name}`));
     if (!e.rate) {
       limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
@@ -1080,7 +1233,7 @@ function renderStats() {
   // Stundenkonto pro Arbeitgeber
   const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
   const today = todayISO();
-  for (const e of state.employers.filter(x => x.account)) {
+  for (const e of workEmployers().filter(x => x.account)) {
     const acc = e.account;
     const accCard = el('div', { class: 'card' }, el('h2', {}, `Stundenkonto · ${e.name}`));
     if (mEnd < acc.start) {
@@ -1133,12 +1286,23 @@ function renderStats() {
 
 function renderSettings() {
   const el1 = $('employer-list');
-  el1.replaceChildren(...state.employers.map(e =>
+  el1.replaceChildren(...workEmployers().map(e =>
     el('button', { class: 'list-item', onclick: () => openEmployerDialog(e) },
       el('i', { class: 'dot', style: `background:${e.color};width:18px;height:18px` }),
       el('span', { class: 'grow' }, e.name, e.rate ? el('small', {}, fmtMoney(e.rate) + ' / Std.') : null),
       el('span', { class: 'hint' }, '›'))));
-  if (!state.employers.length) el1.append(el('p', { class: 'hint' }, 'Noch keine Arbeitgeber.'));
+  if (!workEmployers().length) el1.append(el('p', { class: 'hint' }, 'Noch keine Arbeitgeber.'));
+
+  const elc = $('category-list');
+  elc.replaceChildren(...categories().map(e =>
+    el('button', { class: 'list-item', onclick: () => openEmployerDialog(e) },
+      el('i', { class: 'dot', style: `background:${e.color};width:18px;height:18px` }),
+      el('span', { class: 'grow' }, e.name, e.items && e.items.length ? el('small', {}, 'Mitnehmen: ' + e.items.join(', ')) : null),
+      el('span', { class: 'hint' }, '›'))));
+  if (!categories().length) elc.append(el('p', { class: 'hint' }, 'Noch keine Kategorien.'));
+
+  renderBirthdayList();
+  renderImportList();
 
   const el2 = $('plan-list');
   el2.replaceChildren(...state.plans.filter(p => employerById(p.employerId)).map(p => {
@@ -1161,6 +1325,7 @@ function renderSettings() {
 }
 
 $('add-employer').addEventListener('click', () => openEmployerDialog());
+$('add-category').addEventListener('click', () => openEmployerDialog(null, true));
 $('add-plan').addEventListener('click', () => openPlanDialog());
 $('reminder').addEventListener('change', e => { state.settings.reminder = Number(e.target.value); save(); });
 $('region').replaceChildren(el('option', { value: '' }, '– keine Feiertage –'),
@@ -1172,6 +1337,97 @@ $('region').addEventListener('change', e => {
   toast(e.target.value ? 'Feiertage für ' + REGIONS[e.target.value] + ' aktiv' : 'Feiertage ausgeschaltet');
 });
 
+/* ---------- Geburtstage verwalten ---------- */
+
+let editingBirthday = null;
+
+function renderBirthdayList() {
+  const list = [...(state.birthdays || [])].sort((a, b) => a.date.slice(5).localeCompare(b.date.slice(5)));
+  $('birthday-list').replaceChildren(...list.map(b =>
+    el('button', { class: 'list-item', onclick: () => openBirthdayDialog(b) },
+      el('span', {}, '🎂'),
+      el('span', { class: 'grow' }, b.name,
+        el('small', {}, fromISO(b.date).toLocaleDateString('de-DE', b.showAge ? { day: 'numeric', month: 'long', year: 'numeric' } : { day: 'numeric', month: 'long' }))),
+      el('span', { class: 'hint' }, '›'))));
+  if (!list.length) $('birthday-list').append(el('p', { class: 'hint' }, 'Noch keine Geburtstage.'));
+}
+
+function openBirthdayDialog(b) {
+  editingBirthday = b || null;
+  $('bday-name').value = b ? b.name : '';
+  $('bday-date').value = b ? b.date : '';
+  $('bday-age').checked = b ? !!b.showAge : true;
+  $('bday-delete').hidden = !b;
+  $('bday-dialog').showModal();
+}
+
+$('bday-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const data = { name: $('bday-name').value.trim(), date: $('bday-date').value, showAge: $('bday-age').checked };
+  if (!data.name || !data.date) return;
+  state.birthdays = state.birthdays || [];
+  if (editingBirthday) Object.assign(editingBirthday, data);
+  else state.birthdays.push({ id: uid(), ...data });
+  save();
+  $('bday-dialog').close();
+  render();
+});
+$('bday-delete').addEventListener('click', () => {
+  if (!confirm(`Geburtstag von ${editingBirthday.name} löschen?`)) return;
+  state.birthdays = state.birthdays.filter(b => b !== editingBirthday);
+  save();
+  $('bday-dialog').close();
+  render();
+});
+$('bday-cancel').addEventListener('click', () => $('bday-dialog').close());
+$('add-birthday').addEventListener('click', () => openBirthdayDialog());
+
+/* ---------- Kalender importieren ---------- */
+
+function renderImportList() {
+  $('import-list').replaceChildren(...(state.imports || []).map(imp => {
+    const upcoming = imp.events.filter(ev => ev.d >= todayISO());
+    return el('div', { class: 'list-item' },
+      el('span', {}, '📅'),
+      el('span', { class: 'grow' }, imp.name,
+        el('small', {}, `${upcoming.length} kommende Termine` + (upcoming.length ? ` · bis ${fmtShortDate(upcoming[upcoming.length - 1].d)}` : ''))),
+      el('button', {
+        class: 'btn danger small', type: 'button',
+        onclick: () => {
+          if (!confirm(`„${imp.name}“ entfernen?`)) return;
+          state.imports = state.imports.filter(x => x !== imp);
+          save(); render();
+        },
+      }, 'Entfernen'));
+  }));
+}
+
+$('import-file').addEventListener('change', async e => {
+  const file = e.target.files[0];
+  e.target.value = '';
+  if (!file) return;
+  try {
+    const { calName, events } = parseICS(await file.text());
+    const from = addDays(todayISO(), -31);
+    const t = new Date(); t.setFullYear(t.getFullYear() + 2);
+    const to = toISO(t);
+    const out = [];
+    for (const ev of events) {
+      for (const d of expandEvent(ev, from, to)) out.push({ d, t: ev.title || 'Termin', time: ev.start.time || undefined });
+    }
+    if (!out.length) { toast('In der Datei wurden keine kommenden Termine gefunden'); return; }
+    out.sort((a, b) => a.d.localeCompare(b.d));
+    const name = (calName || file.name.replace(/\.ics$/i, '')).slice(0, 60);
+    state.imports = (state.imports || []).filter(x => x.name !== name); // gleiche Datei nochmal = ersetzen
+    state.imports.push({ id: uid(), name, events: out });
+    save();
+    toast(`${out.length} Termine aus „${name}“ importiert`);
+    render();
+  } catch (err) {
+    toast('Die Datei konnte nicht gelesen werden');
+  }
+});
+
 /* ---------- Google Kalender & ICS ---------- */
 
 const compact = (date, time) => date.replace(/-/g, '') + 'T' + time.replace(':', '') + '00';
@@ -1181,7 +1437,7 @@ function endDate(o) {
 }
 
 function eventTitle(o) {
-  if (isPrivate(o)) return (o.title || 'Termin') + (o.note ? ' – ' + o.note : '');
+  if (isPrivate(o)) return (o.title || (employerById(o.employerId) || {}).name || 'Termin') + (o.note ? ' – ' + o.note : '');
   const emp = employerById(o.employerId);
   return 'Arbeit: ' + (emp ? emp.name : '') + (o.note ? ' – ' + o.note : '');
 }
@@ -1292,6 +1548,7 @@ $('restore-file').addEventListener('change', async e => {
   try {
     const data = JSON.parse(await file.text());
     if (!Array.isArray(data.employers) || !Array.isArray(data.shifts) || !Array.isArray(data.plans)) throw new Error();
+    importIndex = null;
     if (!confirm(`Sicherung laden? ${data.employers.length} Arbeitgeber, ${data.shifts.length} Schichten. Die aktuellen Daten werden ersetzt.`)) return;
     state = Object.assign(emptyState(), data);
     save();
@@ -1329,7 +1586,7 @@ $('grid').addEventListener('touchend', e => {
   if (Math.abs(dx) > 60) { shiftMonth(view, dx < 0 ? 1 : -1); renderCalendar(); }
 });
 
-['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog'].forEach(id => closeOnBackdrop($(id)));
+['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) {
