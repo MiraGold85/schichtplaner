@@ -183,6 +183,21 @@ function accountBalance(emp, to, occ) {
   return (emp.account.opening || 0) * 60 + r.ist - r.soll;
 }
 
+// "Keine Minusstunden": bezahlt wird, was gearbeitet wurde (z. B. Minijob) – nur Plus wird übertragen.
+// Ältere Daten ohne Angabe: bei Minijobs automatisch an.
+const isNoMinus = emp => emp.account.noMinus ?? !!emp.limit;
+
+// Plusstunden, die aus den Monaten vor (year, month) mitgebracht werden – nie unter 0
+function plusCarry(emp, year, month, occ) {
+  let carry = Math.max(0, (emp.account.opening || 0) * 60);
+  const s = fromISO(emp.account.start);
+  for (let y = s.getFullYear(), m = s.getMonth(); y < year || (y === year && m < month); m === 11 ? (y++, m = 0) : m++) {
+    const r = accountRange(emp, toISO(new Date(y, m, 1)), toISO(new Date(y, m + 1, 0)), occ);
+    carry = Math.max(0, carry + r.ist - r.soll);
+  }
+  return carry;
+}
+
 function fmtSigned(min) {
   const m = Math.round(min);
   if (m === 0) return '±0 Std.';
@@ -720,6 +735,7 @@ function openEmployerDialog(emp) {
   $('account-unit').value = acc ? acc.unit : 'week';
   $('account-start').value = acc ? acc.start : todayISO();
   $('account-opening').value = acc && acc.opening ? String(acc.opening).replace('.', ',') : '';
+  $('account-nominus').checked = acc ? isNoMinus(emp) : !!(emp && emp.limit);
   updateLimitSuggestion();
   const used = state.employers.map(e => e.color);
   employerColor = emp ? emp.color : (COLORS.find(c => !used.includes(c)) || COLORS[0]);
@@ -740,7 +756,10 @@ $('employer-form').addEventListener('submit', e => {
     const amount = num('account-amount');
     if (!amount) { toast('Bitte die Sollstunden eintragen'); return; }
     const opening = parseHours($('account-opening').value, true);
-    account = { amount, unit: $('account-unit').value, start: $('account-start').value || todayISO(), opening: opening ? opening / 60 : 0 };
+    account = {
+      amount, unit: $('account-unit').value, start: $('account-start').value || todayISO(),
+      opening: opening ? opening / 60 : 0, noMinus: $('account-nominus').checked,
+    };
   }
   const data = { name, color: employerColor, rate: num('employer-rate'), limit, account };
   if (editingEmployer) Object.assign(editingEmployer, data);
@@ -768,6 +787,7 @@ $('employer-delete').addEventListener('click', () => {
 $('employer-minijob').addEventListener('change', e => {
   $('limit-field').hidden = !e.target.checked;
   if (e.target.checked && !$('employer-limit').value) $('employer-limit').value = String(MINIJOB_LIMIT);
+  $('account-nominus').checked = e.target.checked;
   updateLimitSuggestion();
 });
 
@@ -793,6 +813,7 @@ $('account-from-limit').addEventListener('click', () => {
 $('employer-account').addEventListener('change', e => {
   $('account-fields').hidden = !e.target.checked;
   if (e.target.checked && !$('account-start').value) $('account-start').value = todayISO();
+  if (e.target.checked && !editingEmployer?.account) $('account-nominus').checked = $('employer-minijob').checked;
 });
 ['employer-rate', 'employer-limit'].forEach(id => $(id).addEventListener('input', updateLimitSuggestion));
 
@@ -956,10 +977,29 @@ function renderStats() {
       accCard.append(el('p', { class: 'hint' }, `Das Stundenkonto beginnt am ${fmtShortDate(acc.start)}.`));
     } else {
       const r = accountRange(e, mStart, mEnd, occ);
-      const end = accountBalance(e, mEnd, occ);
       const row = (label, value, cls = '') => el('div', { class: 'acc-row ' + cls }, el('span', {}, label), el('span', {}, value));
+      const sollText = `Soll: ${String(acc.amount).replace('.', ',')} Std. pro ${acc.unit === 'week' ? 'Woche' : 'Monat'}` + (acc.start > mStart ? ` · ab ${fmtShortDate(acc.start)} anteilig` : '');
+      if (isNoMinus(e)) {
+        const carry = plusCarry(e, year, month, occ);
+        const diff = r.ist - r.soll;
+        const endPlus = Math.max(0, carry + diff);
+        accCard.append(
+          el('p', { class: 'hint' }, sollText + ' · keine Minusstunden'),
+          row('Plus aus Vormonaten', fmtSigned(carry), carry > 0 ? 'plus' : ''),
+          row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
+          row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))));
+        if (diff >= 0) accCard.append(row('Neue Plusstunden', fmtSigned(diff), diff > 0 ? 'plus' : ''));
+        else if (carry > 0) accCard.append(row('Plus abgebaut', fmtHours(Math.round(Math.min(carry, -diff)))));
+        accCard.append(row(`Plusstunden Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(endPlus), 'big ' + (endPlus > 0 ? 'plus' : '')));
+        if (carry + diff < 0) {
+          accCard.append(el('p', { class: 'hint' }, `Noch ${fmtHours(Math.round(-(carry + diff)))} bis zum Soll frei – kein Minus, es wird einfach nur ausgezahlt, was du arbeitest.`));
+        }
+        box.append(accCard);
+        continue;
+      }
+      const end = accountBalance(e, mEnd, occ);
       accCard.append(
-        el('p', { class: 'hint' }, `Soll: ${String(acc.amount).replace('.', ',')} Std. pro ${acc.unit === 'week' ? 'Woche' : 'Monat'}` + (acc.start > mStart ? ` · ab ${fmtShortDate(acc.start)} anteilig` : '')),
+        el('p', { class: 'hint' }, sollText),
         row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
         row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
         row('Plus/Minus diesen Monat', fmtSigned(r.ist - r.soll), r.ist - r.soll >= 0 ? 'plus' : 'minus'));
