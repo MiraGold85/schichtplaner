@@ -208,3 +208,16 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
   max-width: calc(100% - 32px); text-align: center;
 }
 .toast.show { opacity: 1; }
+
+/* Minijob-Grenze */
+.check { display: flex; align-items: center; gap: 10px; margin: 14px 0 4px; font-weight: 500; }
+.check input { width: 22px; height: 22px; accent-color: var(--accent); }
+.limit-head { display: flex; justify-content: space-between; align-items: baseline; margin-top: 10px; }
+.limit-head strong { font-size: 1.25rem; }
+.limit-head span { color: var(--muted); }
+.bar.big { height: 12px; border-radius: 6px; margin-top: 8px; }
+.limit-ok { background: #16a34a; }
+.limit-near { background: #f59e0b; }
+.limit-over { background: #dc2626; }
+.limit-text.near { color: #b45309; }
+.limit-text.over { color: var(--danger); font-weight: 600; }

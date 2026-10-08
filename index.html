@@ -135,8 +135,13 @@
       <h2 id="employer-dialog-title">Arbeitgeber</h2>
       <label class="field">Name <input type="text" id="employer-name" required maxlength="40" autocomplete="off"></label>
       <div class="field">Farbe <div class="colors" id="employer-colors"></div></div>
-      <label class="field">Stundenlohn in € <span class="opt">(optional – am besten netto, also was bei dir ankommt)</span>
+      <label class="field">Stundenlohn in € <span class="opt">(optional – was bei dir ankommt; beim Minijob der Lohn laut Vertrag)</span>
         <input type="text" id="employer-rate" inputmode="decimal" placeholder="z. B. 14,50" autocomplete="off">
+      </label>
+      <label class="check"><input type="checkbox" id="employer-minijob"> Minijob <span class="opt">(Verdienstgrenze im Monat beachten)</span></label>
+      <label class="field" id="limit-field" hidden>Monatliche Verdienstgrenze in €
+        <input type="text" id="employer-limit" inputmode="decimal" autocomplete="off">
+        <span class="opt">Wird die Grenze angehoben, trag hier einfach den neuen Betrag ein.</span>
       </label>
       <div class="row actions">
         <button type="button" class="btn danger" id="employer-delete" hidden>Löschen</button>

@@ -4,6 +4,7 @@
 
 const STORAGE_KEY = 'schichtplaner-v1';
 const COLORS = ['#2563eb', '#f97316', '#16a34a', '#db2777', '#7c3aed', '#0891b2', '#ca8a04', '#dc2626'];
+const MINIJOB_LIMIT = 603; // Minijob-Grenze 2026 (Vorschlag, in der App änderbar)
 const WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const ICS_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 
@@ -385,6 +386,9 @@ function openEmployerDialog(emp) {
   $('employer-dialog-title').textContent = emp ? 'Arbeitgeber bearbeiten' : 'Neuer Arbeitgeber';
   $('employer-name').value = emp ? emp.name : '';
   $('employer-rate').value = emp && emp.rate ? String(emp.rate).replace('.', ',') : '';
+  $('employer-minijob').checked = !!(emp && emp.limit);
+  $('employer-limit').value = emp && emp.limit ? String(emp.limit).replace('.', ',') : '';
+  $('limit-field').hidden = !$('employer-minijob').checked;
   const used = state.employers.map(e => e.color);
   employerColor = emp ? emp.color : (COLORS.find(c => !used.includes(c)) || COLORS[0]);
   renderColorPicker();
@@ -396,8 +400,10 @@ $('employer-form').addEventListener('submit', e => {
   e.preventDefault();
   const name = $('employer-name').value.trim();
   if (!name) return;
-  const rate = parseFloat(String($('employer-rate').value).replace(',', '.'));
-  const data = { name, color: employerColor, rate: isFinite(rate) && rate > 0 ? rate : null };
+  const num = id => { const v = parseFloat(String($(id).value).replace(',', '.')); return isFinite(v) && v > 0 ? v : null; };
+  const limit = $('employer-minijob').checked ? num('employer-limit') : null;
+  if ($('employer-minijob').checked && !limit) { toast('Bitte die Verdienstgrenze eintragen'); return; }
+  const data = { name, color: employerColor, rate: num('employer-rate'), limit };
   if (editingEmployer) Object.assign(editingEmployer, data);
   else state.employers.push({ id: uid(), ...data });
   save();
@@ -418,6 +424,11 @@ $('employer-delete').addEventListener('click', () => {
   save();
   $('employer-dialog').close();
   render();
+});
+
+$('employer-minijob').addEventListener('change', e => {
+  $('limit-field').hidden = !e.target.checked;
+  if (e.target.checked && !$('employer-limit').value) $('employer-limit').value = String(MINIJOB_LIMIT);
 });
 
 $('employer-cancel').addEventListener('click', () => $('employer-dialog').close());
@@ -544,6 +555,26 @@ function renderStats() {
         money != null ? el('div', { class: 'stat-money' }, fmtMoney(money)) : null)));
   }
   box.append(card);
+
+  // Minijob-Grenze: Balken pro Arbeitgeber mit Verdienstgrenze
+  for (const e of state.employers.filter(x => x.limit)) {
+    const limitCard = el('div', { class: 'card' }, el('h2', {}, `Minijob-Grenze · ${e.name}`));
+    if (!e.rate) {
+      limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
+    } else {
+      const earned = (per.get(e.id).min / 60) * e.rate;
+      const ratio = earned / e.limit;
+      const level = ratio > 1 ? 'over' : ratio >= 0.85 ? 'near' : 'ok';
+      const left = e.limit - earned;
+      limitCard.append(
+        el('div', { class: 'limit-head' }, el('strong', {}, fmtMoney(earned)), el('span', {}, `von ${fmtMoney(e.limit)}`)),
+        el('div', { class: 'bar big' }, el('div', { class: 'limit-' + level, style: `width:${Math.min(ratio, 1) * 100}%` })),
+        el('p', { class: 'hint limit-text ' + level }, left >= 0
+          ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtHours(Math.floor((left / e.rate) * 60 / 15) * 15)}`
+          : `⚠️ ${fmtMoney(-left)} über der Grenze! Am besten Termine verschieben oder mit dem Arbeitgeber sprechen.`));
+    }
+    box.append(limitCard);
+  }
   box.append(el('div', { class: 'card' },
     el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
     anyRate ? el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
