@@ -60,6 +60,11 @@
         <div id="plan-list"></div>
       </div>
       <div class="card">
+        <h2>Feiertage</h2>
+        <p class="hint">Feiertage werden im Kalender markiert. Fällt eine feste Wochenzeit auf einen Feiertag, entfällt sie und die Stunden werden gutgeschrieben.</p>
+        <label class="field">Bundesland <select id="region"></select></label>
+      </div>
+      <div class="card">
         <h2>In den Handykalender</h2>
         <p class="hint">Exportiert deine Schichten als Kalenderdatei mit Erinnerung. Auf dem Handy mit dem Kalender öffnen (z.&nbsp;B. Samsung-Kalender). Für Google Kalender gibt es bei jeder Schicht den Knopf „In Google Kalender“.</p>
         <label class="field">Erinnerung
@@ -108,15 +113,31 @@
     <form method="dialog" id="shift-form">
       <h2 id="shift-dialog-title">Schicht eintragen</h2>
       <div class="chips" id="shift-employers"></div>
+      <div class="segment" id="shift-type">
+        <button type="button" data-type="work">Arbeit</button>
+        <button type="button" data-type="urlaub">🌴 Urlaub</button>
+        <button type="button" data-type="krank">🤒 Krank</button>
+      </div>
       <label class="field" id="private-fields" hidden>Was? <span class="opt">(z.&nbsp;B. Zahnarzt, Elternabend)</span>
         <input type="text" id="shift-title" maxlength="80" autocomplete="off">
       </label>
       <label class="field">Datum <input type="date" id="shift-date" required></label>
+      <div id="time-fields">
       <div class="row">
         <label class="field">Von <input type="time" id="shift-start" required></label>
         <label class="field">Bis <span class="opt" id="end-opt" hidden>(optional)</span><input type="time" id="shift-end" required></label>
       </div>
       <div class="chips small" id="recent-times"></div>
+      </div>
+      <div id="absence-fields" hidden>
+        <label class="field" id="absence-until-field">Bis <span class="opt">(optional, für mehrere Tage)</span>
+          <input type="date" id="absence-until">
+        </label>
+        <label class="field">Gutschrift pro Tag in Std.
+          <input type="text" id="absence-credit" inputmode="decimal" placeholder="z. B. 4 oder 4,5" autocomplete="off">
+        </label>
+        <p class="hint">Bei mehreren Tagen werden nur deine Arbeitstage eingetragen (feste Wochenzeiten, sonst Mo–Fr) – ohne Feiertage.</p>
+      </div>
       <label class="field">Notiz <span class="opt">(optional, z.&nbsp;B. Kundin, Adresse)</span>
         <input type="text" id="shift-note" maxlength="200" autocomplete="off">
       </label>
@@ -172,6 +193,22 @@
         <input type="text" id="employer-limit" inputmode="decimal" autocomplete="off">
         <span class="opt">Wird die Grenze angehoben, trag hier einfach den neuen Betrag ein.</span>
       </label>
+      <label class="check"><input type="checkbox" id="employer-account"> Stundenkonto führen <span class="opt">(Plus-/Minusstunden)</span></label>
+      <div id="account-fields" hidden>
+        <div class="row">
+          <label class="field">Sollstunden <input type="text" id="account-amount" inputmode="decimal" placeholder="z. B. 20" autocomplete="off"></label>
+          <label class="field">pro
+            <select id="account-unit"><option value="week">Woche</option><option value="month">Monat</option></select>
+          </label>
+        </div>
+        <button type="button" class="btn secondary small full" id="account-from-limit" hidden></button>
+        <div class="row">
+          <label class="field">Zählt ab <input type="date" id="account-start"></label>
+          <label class="field">Anfangsstand <span class="opt">(Std., optional)</span>
+            <input type="text" id="account-opening" placeholder="z. B. -2 oder 5,5" autocomplete="off">
+          </label>
+        </div>
+      </div>
       <div class="row actions">
         <button type="button" class="btn danger" id="employer-delete" hidden>Löschen</button>
         <button type="button" class="btn secondary" id="employer-cancel">Abbrechen</button>

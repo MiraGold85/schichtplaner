@@ -71,24 +71,140 @@ function endTime(o) {
   const m = (toMin(o.start) + 60) % 1440;
   return pad(Math.floor(m / 60)) + ':' + pad(m % 60);
 }
-const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + durationMin(o.start, o.end), 0);
+// Minuten, die ein Eintrag zählt: Arbeitszeit oder Gutschrift (Urlaub, Krank, Feiertag)
+const occMinutes = o => o.credit != null ? o.credit : (o.start && o.end ? durationMin(o.start, o.end) : 0);
+const isCredit = o => o.kind === 'absence' || o.kind === 'holiday';
+const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + occMinutes(o), 0);
+const ABSENCE_LABEL = { urlaub: 'Urlaub', krank: 'Krank' };
+
+/* ---------- Feiertage ---------- */
+
+const REGIONS = {
+  BW: 'Baden-Württemberg', BY: 'Bayern', BE: 'Berlin', BB: 'Brandenburg', HB: 'Bremen', HH: 'Hamburg',
+  HE: 'Hessen', MV: 'Mecklenburg-Vorpommern', NI: 'Niedersachsen', NW: 'Nordrhein-Westfalen',
+  RP: 'Rheinland-Pfalz', SL: 'Saarland', SN: 'Sachsen', ST: 'Sachsen-Anhalt', SH: 'Schleswig-Holstein', TH: 'Thüringen',
+};
+
+function easterSunday(y) { // Gaußsche Osterformel (gregorianisch)
+  const a = y % 19, b = Math.floor(y / 100), c = y % 100, d = Math.floor(b / 4), e = b % 4;
+  const f = Math.floor((b + 8) / 25), g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30, i = Math.floor(c / 4), k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7, m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const month = Math.floor((h + l - 7 * m + 114) / 31), day = ((h + l - 7 * m + 114) % 31) + 1;
+  return toISO(new Date(y, month - 1, day));
+}
+
+const holidayCache = new Map();
+function holidaysOf(year, region) {
+  const key = year + region;
+  if (holidayCache.has(key)) return holidayCache.get(key);
+  const E = easterSunday(year);
+  const fix = (m, d) => `${year}-${pad(m)}-${pad(d)}`;
+  const inR = list => list.split(' ').includes(region);
+  const days = [
+    [fix(1, 1), 'Neujahr'],
+    [addDays(E, -2), 'Karfreitag'],
+    [addDays(E, 1), 'Ostermontag'],
+    [fix(5, 1), 'Tag der Arbeit'],
+    [addDays(E, 39), 'Christi Himmelfahrt'],
+    [addDays(E, 50), 'Pfingstmontag'],
+    [fix(10, 3), 'Tag der Deutschen Einheit'],
+    [fix(12, 25), '1. Weihnachtstag'],
+    [fix(12, 26), '2. Weihnachtstag'],
+  ];
+  if (inR('BW BY ST')) days.push([fix(1, 6), 'Heilige Drei Könige']);
+  if (inR('BE MV')) days.push([fix(3, 8), 'Frauentag']);
+  if (inR('BB')) days.push([E, 'Ostersonntag'], [addDays(E, 49), 'Pfingstsonntag']);
+  if (inR('BW BY HE NW RP SL')) days.push([addDays(E, 60), 'Fronleichnam']);
+  if (inR('SL')) days.push([fix(8, 15), 'Mariä Himmelfahrt']);
+  if (inR('TH')) days.push([fix(9, 20), 'Weltkindertag']);
+  if (inR('BB HB HH MV NI SN ST SH TH')) days.push([fix(10, 31), 'Reformationstag']);
+  if (inR('BW BY NW RP SL')) days.push([fix(11, 1), 'Allerheiligen']);
+  if (inR('SN')) { // Buß- und Bettag: Mittwoch vor dem 23. November
+    const d = new Date(year, 10, 22);
+    while (d.getDay() !== 3) d.setDate(d.getDate() - 1);
+    days.push([toISO(d), 'Buß- und Bettag']);
+  }
+  const map = new Map(days);
+  holidayCache.set(key, map);
+  return map;
+}
+
+function holidayName(date) {
+  const region = state.settings.region;
+  return region ? holidaysOf(Number(date.slice(0, 4)), region).get(date) || null : null;
+}
 
 function occurrencesOn(date) {
   const list = [];
+  const absent = new Set();
   for (const s of state.shifts) {
-    if (s.date === date) list.push({ kind: 'shift', ...s });
+    if (s.date !== date) continue;
+    if (s.absence) { list.push({ kind: 'absence', ...s }); absent.add(s.employerId); }
+    else list.push({ kind: 'shift', ...s });
   }
   const wd = isoWeekday(date);
+  const holiday = holidayName(date);
   for (const p of state.plans) {
     if (!p.weekdays.includes(wd)) continue;
     if (date < p.from || (p.until && date > p.until)) continue;
     if (p.skips && p.skips.includes(date)) continue;
-    list.push({ kind: 'plan', id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, note: p.note || '' });
+    if (absent.has(p.employerId)) continue; // Urlaub/Krank ersetzt die feste Schicht
+    const base = { id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, note: p.note || '' };
+    // Feiertag: feste Schicht entfällt, die Stunden werden gutgeschrieben
+    if (holiday) list.push({ ...base, kind: 'holiday', holiday, credit: durationMin(p.start, p.end) });
+    else list.push({ ...base, kind: 'plan' });
   }
   return list
     .filter(o => employerById(o.employerId))
-    .sort((a, b) => a.start.localeCompare(b.start));
+    .sort((a, b) => (isCredit(a) ? '' : a.start).localeCompare(isCredit(b) ? '' : b.start));
 }
+
+/* ---------- Stundenkonto ---------- */
+
+const daysInMonthOf = iso => new Date(Number(iso.slice(0, 4)), Number(iso.slice(5, 7)), 0).getDate();
+
+// Soll pro Tag gleichmäßig verteilt: Wochen-Soll / 7 bzw. Monats-Soll / Tage im Monat
+const dailySollMin = (acc, iso) => acc.unit === 'week' ? acc.amount * 60 / 7 : acc.amount * 60 / daysInMonthOf(iso);
+
+function accountRange(emp, from, to, occ = occurrencesOn) {
+  let soll = 0, ist = 0;
+  if (from < emp.account.start) from = emp.account.start;
+  for (let d = from; d <= to; d = addDays(d, 1)) {
+    soll += dailySollMin(emp.account, d);
+    for (const o of occ(d)) if (o.employerId === emp.id) ist += occMinutes(o);
+  }
+  return { soll, ist };
+}
+
+function accountBalance(emp, to, occ) {
+  if (to < emp.account.start) return null;
+  const r = accountRange(emp, emp.account.start, to, occ);
+  return (emp.account.opening || 0) * 60 + r.ist - r.soll;
+}
+
+function fmtSigned(min) {
+  const m = Math.round(min);
+  if (m === 0) return '±0 Std.';
+  return (m > 0 ? '+' : '−') + fmtHours(Math.abs(m));
+}
+
+// "5,5" / "5:30" / "-2" -> Minuten
+function parseHours(text, allowNegative = false) {
+  const t = String(text).trim().replace('−', '-');
+  if (!t) return null;
+  let min;
+  if (t.includes(':')) {
+    const neg = t.startsWith('-');
+    const [h, m] = t.replace('-', '').split(':').map(Number);
+    min = (h * 60 + (m || 0)) * (neg ? -1 : 1);
+  } else {
+    min = Math.round(parseFloat(t.replace(',', '.')) * 60);
+  }
+  if (!isFinite(min) || (!allowNegative && min < 0)) return null;
+  return min;
+}
+const hoursText = min => String(Math.round(min / 60 * 100) / 100).replace('.', ',');
 
 /* ---------- Kleine UI-Helfer ---------- */
 
@@ -159,8 +275,8 @@ function renderCalendar() {
     const iso = toISO(d);
     const occ = occurrencesOn(iso);
     const cell = el('button', {
-      class: 'cell' + (d.getMonth() !== view.month ? ' other' : '') + (iso === today ? ' today' : '') + (iso === view.selected ? ' selected' : ''),
-      'aria-label': fmtDayTitle(iso) + (occ.length ? `, ${occ.length} Termin(e)` : ''),
+      class: 'cell' + (d.getMonth() !== view.month ? ' other' : '') + (iso === today ? ' today' : '') + (iso === view.selected ? ' selected' : '') + (holidayName(iso) ? ' holiday' : ''),
+      'aria-label': fmtDayTitle(iso) + (holidayName(iso) ? ', ' + holidayName(iso) : '') + (occ.length ? `, ${occ.length} Termin(e)` : ''),
       onclick: () => {
         view.selected = iso;
         if (d.getMonth() !== view.month) { view.year = d.getFullYear(); view.month = d.getMonth(); }
@@ -168,7 +284,10 @@ function renderCalendar() {
       },
     }, el('span', { class: 'num' }, String(d.getDate())));
     occ.slice(0, 2).forEach(o => {
-      cell.append(el('span', { class: 'pill', style: `background:${employerById(o.employerId).color}` }, o.start.replace(/^0/, '')));
+      const color = employerById(o.employerId).color;
+      cell.append(isCredit(o)
+        ? el('span', { class: 'pill credit', style: `border-color:${color};color:${color}` }, o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence])
+        : el('span', { class: 'pill', style: `background:${color}` }, o.start.replace(/^0/, '')));
     });
     if (occ.length > 2) cell.append(el('span', { class: 'more' }, `+${occ.length - 2}`));
     grid.append(cell);
@@ -191,6 +310,8 @@ function renderDay() {
 
   const list = $('day-list');
   list.replaceChildren();
+  const holiday = holidayName(date);
+  if (holiday) list.append(el('div', { class: 'holiday-banner' }, `🎉 Feiertag: ${holiday}`));
 
   if (!state.employers.length && !occ.length) {
     list.append(el('div', { class: 'card' },
@@ -205,6 +326,21 @@ function renderDay() {
   }
   for (const o of occ) {
     const emp = employerById(o.employerId);
+    if (isCredit(o)) {
+      list.append(el('button', {
+        class: 'entry',
+        onclick: () => o.kind === 'holiday'
+          ? toast('Feiertag: Die feste Schicht entfällt und wird gutgeschrieben. Arbeitest du trotzdem, trag eine Schicht mit + ein.')
+          : openShiftDialog(o),
+      },
+        el('span', { class: 'stripe credit', style: `background:${emp.color}` }),
+        el('span', { class: 'body' },
+          el('span', { class: 'who' }, emp.name,
+            el('span', { class: 'badge' }, o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence])),
+          el('div', { class: 'when' }, (o.kind === 'holiday' ? `${o.start} – ${o.end} Uhr entfällt · ` : '') + `${fmtHours(o.credit)} gutgeschrieben`),
+          o.note ? el('div', { class: 'note' }, o.note) : null)));
+      continue;
+    }
     list.append(el('button', { class: 'entry', onclick: () => openShiftDialog(o) },
       el('span', { class: 'stripe', style: `background:${emp.color}` }),
       el('span', { class: 'body' },
@@ -222,6 +358,57 @@ function renderDay() {
 
 let editing = null;        // das gerade bearbeitete Vorkommen (oder null = neu)
 let shiftEmployerId = null;
+let shiftType = 'work';    // 'work' | 'urlaub' | 'krank'
+
+// Vorschlag für die Gutschrift an einem Urlaubs-/Krankheitstag
+function defaultCredit(empId, date) {
+  const wd = isoWeekday(date);
+  const plan = state.plans.find(p => p.employerId === empId && p.weekdays.includes(wd) && date >= p.from && (!p.until || date <= p.until));
+  if (plan) return durationMin(plan.start, plan.end);
+  const emp = employerById(empId);
+  if (emp && emp.account) return Math.round(emp.account.unit === 'week' ? emp.account.amount * 60 / 5 : emp.account.amount * 60 * 12 / 52 / 5);
+  return null;
+}
+
+// Arbeitstage für einen Urlaubs-/Krankheitszeitraum: Tage mit fester Wochenzeit, sonst Mo–Fr – ohne Feiertage
+function absenceDays(empId, from, until) {
+  if (!until || until <= from) return [from];
+  const plans = state.plans.filter(p => p.employerId === empId);
+  const out = [];
+  for (let d = from; d <= until; d = addDays(d, 1)) {
+    if (holidayName(d)) continue;
+    const wd = isoWeekday(d);
+    const works = plans.length
+      ? plans.some(p => p.weekdays.includes(wd) && d >= p.from && (!p.until || d <= p.until))
+      : wd <= 5;
+    if (works) out.push(d);
+  }
+  return out;
+}
+
+function setShiftType(type) {
+  const priv = shiftEmployerId === PRIVATE.id;
+  shiftType = priv ? 'work' : type;
+  const absence = shiftType !== 'work';
+  $('shift-type').hidden = priv;
+  $('shift-type').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.type === shiftType));
+  $('time-fields').hidden = absence;
+  $('absence-fields').hidden = !absence;
+  $('shift-start').required = !absence;
+  $('shift-end').required = !absence && !priv;
+  $('absence-until-field').hidden = !!editing;
+  if (absence && (!editing || editing.kind !== 'absence')) {
+    const c = defaultCredit(shiftEmployerId, $('shift-date').value);
+    $('absence-credit').value = c != null ? hoursText(c) : '';
+  }
+  $('shift-copy').hidden = !editing || absence || isCredit(editing);
+  updateShiftPreview();
+}
+
+$('shift-type').addEventListener('click', e => {
+  const b = e.target.closest('button[data-type]');
+  if (b) setShiftType(b.dataset.type);
+});
 
 function renderEmployerChips(container, selectedId, onPick, withPrivate = false) {
   const items = withPrivate ? [...state.employers, PRIVATE] : state.employers;
@@ -239,7 +426,7 @@ function recentTimes(employerId) {
   const out = [];
   const sources = [
     ...state.plans.filter(p => p.employerId === employerId),
-    ...state.shifts.filter(s => s.employerId === employerId).slice().reverse(),
+    ...state.shifts.filter(s => s.employerId === employerId && s.start && s.end).slice().reverse(),
   ];
   for (const s of sources) {
     const key = `${s.start}-${s.end}`;
@@ -259,7 +446,7 @@ function pickShiftEmployer(id) {
   $('shift-title').required = priv;
   $('shift-end').required = !priv;
   $('end-opt').hidden = !priv;
-  $('shift-dialog-title').textContent = (editing ? (priv ? 'Termin' : 'Schicht') + ' bearbeiten' : (priv ? 'Privater Termin' : 'Schicht eintragen'));
+  $('shift-dialog-title').textContent = editing ? (priv ? 'Termin' : 'Eintrag') + ' bearbeiten' : (priv ? 'Privater Termin' : 'Eintragen');
   const times = priv ? [] : recentTimes(id);
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
@@ -271,16 +458,16 @@ function pickShiftEmployer(id) {
     $('shift-start').value = times[0] ? times[0].start : '';
     $('shift-end').value = times[0] ? times[0].end : '';
   }
-  updateShiftPreview();
+  setShiftType(shiftType);
 }
 
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
-  $('shift-duration').textContent = s && e && shiftEmployerId !== PRIVATE.id
+  $('shift-duration').textContent = shiftType === 'work' && s && e && shiftEmployerId !== PRIVATE.id
     ? 'Dauer: ' + fmtHours(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
     : '';
   const link = $('shift-gcal');
-  if (s && (e || shiftEmployerId === PRIVATE.id) && shiftEmployerId && $('shift-date').value) {
+  if (shiftType === 'work' && s && (e || shiftEmployerId === PRIVATE.id) && shiftEmployerId && $('shift-date').value) {
     link.href = gcalLink({ employerId: shiftEmployerId, date: $('shift-date').value, start: s, end: e, note: $('shift-note').value, title: $('shift-title').value });
     link.hidden = false;
   } else {
@@ -296,11 +483,13 @@ function openShiftDialog(occurrence) {
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
   $('shift-title').value = o.title || '';
+  $('absence-until').value = '';
+  $('absence-credit').value = o.kind === 'absence' ? hoursText(o.credit) : '';
+  shiftType = o.kind === 'absence' ? o.absence : 'work';
   $('shift-delete').hidden = !occurrence;
-  $('shift-copy').hidden = !occurrence;
   $('plan-hint').hidden = !(occurrence && occurrence.kind === 'plan');
   // neue Einträge starten beim zuletzt genutzten Arbeitgeber (private Termine überspringen)
-  const lastWork = state.shifts.filter(s => !isPrivate(s)).pop();
+  const lastWork = state.shifts.filter(s => !isPrivate(s) && !s.absence).pop();
   const fallback = lastWork && employerById(lastWork.employerId) ? lastWork.employerId
     : (state.employers[0] ? state.employers[0].id : PRIVATE.id);
   pickShiftEmployer(o.employerId || fallback);
@@ -314,8 +503,46 @@ function skipPlanDate(planId, date) {
   if (!p.skips.includes(date)) p.skips.push(date);
 }
 
+function saveAbsence() {
+  const credit = parseHours($('absence-credit').value);
+  if (credit == null || credit === 0) { toast('Bitte eintragen, wie viele Stunden pro Tag gutgeschrieben werden'); return false; }
+  const base = { employerId: shiftEmployerId, absence: shiftType, credit, note: $('shift-note').value.trim() };
+  const date = $('shift-date').value;
+  if (!date) return false;
+  if (editing && editing.kind !== 'plan') {
+    // vorhandenen Eintrag (Schicht oder Urlaub/Krank) umwandeln bzw. ändern
+    const target = state.shifts.find(s => s.id === editing.id);
+    ['start', 'end', 'title'].forEach(k => delete target[k]);
+    Object.assign(target, base, { date });
+    return date;
+  }
+  const until = $('absence-until').value;
+  if (until && until < date) { toast('„Bis“ liegt vor dem Datum'); return false; }
+  const days = editing ? [date] : absenceDays(shiftEmployerId, date, until);
+  let added = 0;
+  for (const d of days) {
+    if (state.shifts.some(s => s.absence && s.employerId === shiftEmployerId && s.date === d)) continue;
+    state.shifts.push({ id: uid(), date: d, ...base });
+    added++;
+  }
+  if (!added) { toast('Keine Arbeitstage in diesem Zeitraum'); return false; }
+  if (days.length > 1) setTimeout(() => toast(`${added} Tag${added === 1 ? '' : 'e'} ${ABSENCE_LABEL[shiftType]} eingetragen`), 50);
+  return date;
+}
+
 $('shift-form').addEventListener('submit', e => {
   e.preventDefault();
+  if (shiftType !== 'work') {
+    const date = saveAbsence();
+    if (!date) return;
+    save();
+    view.selected = date;
+    const d = fromISO(date); view.year = d.getFullYear(); view.month = d.getMonth();
+    $('shift-dialog').close();
+    toast('Gespeichert');
+    render();
+    return;
+  }
   const data = {
     employerId: shiftEmployerId,
     date: $('shift-date').value,
@@ -332,7 +559,11 @@ $('shift-form').addEventListener('submit', e => {
 
   if (editing && editing.kind === 'shift') {
     const target = state.shifts.find(s => s.id === editing.id);
-    delete target.title;
+    ['title', 'absence', 'credit'].forEach(k => delete target[k]);
+    Object.assign(target, data);
+  } else if (editing && editing.kind === 'absence') {
+    const target = state.shifts.find(s => s.id === editing.id);
+    ['absence', 'credit'].forEach(k => delete target[k]);
     Object.assign(target, data);
   } else if (editing && editing.kind === 'plan') {
     const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title'].every(k => (editing[k] || '') === data[k]);
@@ -357,7 +588,7 @@ $('shift-delete').addEventListener('click', () => {
     if (!confirm('Diesen einen Termin der festen Wochenzeit entfernen (z. B. Urlaub, krank)?')) return;
     skipPlanDate(editing.id, editing.date);
   } else {
-    if (!confirm('Diese Schicht löschen?')) return;
+    if (!confirm(editing.kind === 'absence' ? 'Diesen Eintrag löschen?' : 'Diese Schicht löschen?')) return;
     state.shifts = state.shifts.filter(s => s.id !== editing.id);
   }
   save();
@@ -436,7 +667,7 @@ $('copy-form').addEventListener('submit', e => {
   let added = 0;
   for (const date of [...copyDates].sort()) {
     // gleichen Termin am selben Tag nicht doppelt anlegen
-    const exists = occurrencesOn(date).some(o => o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
+    const exists = occurrencesOn(date).some(o => !isCredit(o) && o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
     if (exists) continue;
     const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', note: src.note || '' };
     if (isPrivate(src)) copy.title = src.title;
@@ -456,6 +687,9 @@ $('copy-cancel').addEventListener('click', () => $('copy-dialog').close());
 $('copy-prev').addEventListener('click', () => { shiftMonth(copyView, -1); renderCopyGrid(); });
 $('copy-next').addEventListener('click', () => { shiftMonth(copyView, 1); renderCopyGrid(); });
 ['shift-start', 'shift-end', 'shift-date', 'shift-note'].forEach(id => $(id).addEventListener('input', updateShiftPreview));
+$('shift-date').addEventListener('change', () => {
+  if (shiftType !== 'work' && (!editing || editing.kind !== 'absence')) setShiftType(shiftType);
+});
 
 /* ---------- Arbeitgeber-Dialog ---------- */
 
@@ -479,6 +713,14 @@ function openEmployerDialog(emp) {
   $('employer-minijob').checked = !!(emp && emp.limit);
   $('employer-limit').value = emp && emp.limit ? String(emp.limit).replace('.', ',') : '';
   $('limit-field').hidden = !$('employer-minijob').checked;
+  const acc = emp && emp.account;
+  $('employer-account').checked = !!acc;
+  $('account-fields').hidden = !acc;
+  $('account-amount').value = acc ? String(acc.amount).replace('.', ',') : '';
+  $('account-unit').value = acc ? acc.unit : 'week';
+  $('account-start').value = acc ? acc.start : todayISO();
+  $('account-opening').value = acc && acc.opening ? String(acc.opening).replace('.', ',') : '';
+  updateLimitSuggestion();
   const used = state.employers.map(e => e.color);
   employerColor = emp ? emp.color : (COLORS.find(c => !used.includes(c)) || COLORS[0]);
   renderColorPicker();
@@ -493,7 +735,14 @@ $('employer-form').addEventListener('submit', e => {
   const num = id => { const v = parseFloat(String($(id).value).replace(',', '.')); return isFinite(v) && v > 0 ? v : null; };
   const limit = $('employer-minijob').checked ? num('employer-limit') : null;
   if ($('employer-minijob').checked && !limit) { toast('Bitte die Verdienstgrenze eintragen'); return; }
-  const data = { name, color: employerColor, rate: num('employer-rate'), limit };
+  let account = null;
+  if ($('employer-account').checked) {
+    const amount = num('account-amount');
+    if (!amount) { toast('Bitte die Sollstunden eintragen'); return; }
+    const opening = parseHours($('account-opening').value, true);
+    account = { amount, unit: $('account-unit').value, start: $('account-start').value || todayISO(), opening: opening ? opening / 60 : 0 };
+  }
+  const data = { name, color: employerColor, rate: num('employer-rate'), limit, account };
   if (editingEmployer) Object.assign(editingEmployer, data);
   else state.employers.push({ id: uid(), ...data });
   save();
@@ -519,7 +768,33 @@ $('employer-delete').addEventListener('click', () => {
 $('employer-minijob').addEventListener('change', e => {
   $('limit-field').hidden = !e.target.checked;
   if (e.target.checked && !$('employer-limit').value) $('employer-limit').value = String(MINIJOB_LIMIT);
+  updateLimitSuggestion();
 });
+
+// Minijob: Soll-Stunden aus Grenze ÷ Stundenlohn vorschlagen
+function limitHours() {
+  const rate = parseFloat(String($('employer-rate').value).replace(',', '.'));
+  const limit = parseFloat(String($('employer-limit').value).replace(',', '.'));
+  if (!$('employer-minijob').checked || !(rate > 0) || !(limit > 0)) return null;
+  return Math.floor(limit / rate * 100) / 100;
+}
+function updateLimitSuggestion() {
+  const h = limitHours();
+  const b = $('account-from-limit');
+  b.hidden = h == null;
+  if (h != null) b.textContent = `Aus Minijob-Grenze übernehmen: ${String(h).replace('.', ',')} Std. / Monat`;
+}
+$('account-from-limit').addEventListener('click', () => {
+  const h = limitHours();
+  if (h == null) return;
+  $('account-amount').value = String(h).replace('.', ',');
+  $('account-unit').value = 'month';
+});
+$('employer-account').addEventListener('change', e => {
+  $('account-fields').hidden = !e.target.checked;
+  if (e.target.checked && !$('account-start').value) $('account-start').value = todayISO();
+});
+['employer-rate', 'employer-limit'].forEach(id => $(id).addEventListener('input', updateLimitSuggestion));
 
 $('employer-cancel').addEventListener('click', () => $('employer-dialog').close());
 
@@ -609,13 +884,17 @@ function renderStats() {
   const { year, month } = statsMonth;
   $('stats-label').textContent = monthName(year, month);
   const days = new Date(year, month + 1, 0).getDate();
-  const per = new Map(state.employers.map(e => [e.id, { min: 0, count: 0 }]));
+  // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
+  const memo = new Map();
+  const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
+  const per = new Map(state.employers.map(e => [e.id, { min: 0, count: 0, credit: 0 }]));
   for (let d = 1; d <= days; d++) {
-    for (const o of occurrencesOn(toISO(new Date(year, month, d)))) {
+    for (const o of occ(toISO(new Date(year, month, d)))) {
       const p = per.get(o.employerId);
       if (!p) continue; // private Termine zählen nicht
-      p.min += durationMin(o.start, o.end);
-      p.count++;
+      p.min += occMinutes(o);
+      if (isCredit(o)) p.credit += occMinutes(o);
+      else p.count++;
     }
   }
 
@@ -638,7 +917,7 @@ function renderStats() {
       el('i', { class: 'dot', style: `background:${e.color}` }),
       el('div', { class: 'grow' },
         el('div', {}, e.name),
-        el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}`),
+        el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}` + (p.credit ? ` · davon ${fmtHours(p.credit)} Urlaub/Krank/Feiertag` : '')),
         el('div', { class: 'bar' }, el('div', { style: `width:${(p.min / max) * 100}%;background:${e.color}` }))),
       el('div', {},
         el('div', { class: 'stat-hours' }, fmtHours(p.min)),
@@ -661,10 +940,38 @@ function renderStats() {
         el('div', { class: 'bar big' }, el('div', { class: 'limit-' + level, style: `width:${Math.min(ratio, 1) * 100}%` })),
         el('p', { class: 'hint limit-text ' + level }, left >= 0
           ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtHours(Math.floor((left / e.rate) * 60 / 15) * 15)}`
-          : `⚠️ ${fmtMoney(-left)} über der Grenze! Am besten Termine verschieben oder mit dem Arbeitgeber sprechen.`));
+          : e.account
+            ? `${fmtMoney(-left)} über der Grenze – das sind ${fmtHours(Math.round(-left / e.rate * 60))}, die als Plus auf dein Stundenkonto gehen (wenn das mit deinem Arbeitgeber so vereinbart ist).`
+            : `⚠️ ${fmtMoney(-left)} über der Grenze! Am besten Termine verschieben oder mit dem Arbeitgeber sprechen.`));
     }
     box.append(limitCard);
   }
+  // Stundenkonto pro Arbeitgeber
+  const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
+  const today = todayISO();
+  for (const e of state.employers.filter(x => x.account)) {
+    const acc = e.account;
+    const accCard = el('div', { class: 'card' }, el('h2', {}, `Stundenkonto · ${e.name}`));
+    if (mEnd < acc.start) {
+      accCard.append(el('p', { class: 'hint' }, `Das Stundenkonto beginnt am ${fmtShortDate(acc.start)}.`));
+    } else {
+      const r = accountRange(e, mStart, mEnd, occ);
+      const end = accountBalance(e, mEnd, occ);
+      const row = (label, value, cls = '') => el('div', { class: 'acc-row ' + cls }, el('span', {}, label), el('span', {}, value));
+      accCard.append(
+        el('p', { class: 'hint' }, `Soll: ${String(acc.amount).replace('.', ',')} Std. pro ${acc.unit === 'week' ? 'Woche' : 'Monat'}` + (acc.start > mStart ? ` · ab ${fmtShortDate(acc.start)} anteilig` : '')),
+        row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
+        row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
+        row('Plus/Minus diesen Monat', fmtSigned(r.ist - r.soll), r.ist - r.soll >= 0 ? 'plus' : 'minus'));
+      if (today >= mStart && today <= mEnd && today >= acc.start) {
+        const now = accountBalance(e, today, occ);
+        accCard.append(row('Kontostand heute', fmtSigned(now), 'big ' + (now >= 0 ? 'plus' : 'minus')));
+      }
+      accCard.append(row(`Kontostand Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(end), 'big ' + (end >= 0 ? 'plus' : 'minus')));
+    }
+    box.append(accCard);
+  }
+
   box.append(el('div', { class: 'card' },
     el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
     anyRate ? el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
@@ -696,6 +1003,7 @@ function renderSettings() {
   if (!state.plans.length) el2.append(el('p', { class: 'hint' }, 'Keine festen Wochenzeiten.'));
 
   $('reminder').value = String(state.settings.reminder ?? 60);
+  $('region').value = state.settings.region || '';
   $('last-backup').textContent = state.lastBackup
     ? 'Letzte Sicherung: ' + new Date(state.lastBackup).toLocaleDateString('de-DE')
     : 'Noch keine Sicherung gemacht.';
@@ -704,6 +1012,13 @@ function renderSettings() {
 $('add-employer').addEventListener('click', () => openEmployerDialog());
 $('add-plan').addEventListener('click', () => openPlanDialog());
 $('reminder').addEventListener('change', e => { state.settings.reminder = Number(e.target.value); save(); });
+$('region').replaceChildren(el('option', { value: '' }, '– keine Feiertage –'),
+  ...Object.entries(REGIONS).map(([k, v]) => el('option', { value: k }, v)));
+$('region').addEventListener('change', e => {
+  state.settings.region = e.target.value || null;
+  save();
+  toast(e.target.value ? 'Feiertage für ' + REGIONS[e.target.value] + ' aktiv' : 'Feiertage ausgeschaltet');
+});
 
 /* ---------- Google Kalender & ICS ---------- */
 
@@ -765,6 +1080,7 @@ function buildICS(months, reminder) {
   let count = 0;
   for (let d = from; d <= until; d = addDays(d, 1)) {
     for (const o of occurrencesOn(d)) {
+      if (isCredit(o)) continue;
       count++;
       lines.push(
         'BEGIN:VEVENT',

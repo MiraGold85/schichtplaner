@@ -7,6 +7,12 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Einzeltermine mit Notiz (z. B. Kundin, Adresse) und Schnellwahl der zuletzt genutzten Uhrzeiten
 - Monatskalender mit farbigen Markierungen
 - Stunden- und Verdienstübersicht pro Monat
+- Private Termine (z. B. Zahnarzt), die nicht als Arbeitszeit zählen
+- Termine auf andere Tage kopieren (z. B. „jede Woche, 3 Wochen lang“)
+- Minijob-Grenze mit Fortschrittsbalken (Grenze in der App änderbar)
+- Stundenkonto pro Arbeitgeber: Soll pro Woche oder Monat, Startdatum, Anfangsstand, Plus-/Minusstunden
+- Urlaub und Krankheit mit Stunden-Gutschrift (auch über mehrere Tage)
+- Gesetzliche Feiertage aller Bundesländer – feste Wochenzeiten an Feiertagen werden gutgeschrieben
 - Eintragen in Google Kalender (einzeln oder als Serie) und Export als Kalenderdatei (.ics) mit Erinnerung
 - Datensicherung als Datei und Wiederherstellung
 

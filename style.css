@@ -231,3 +231,19 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 .grid.mini .busy { position: absolute; bottom: 1px; left: 0; right: 0; font-size: .8rem; line-height: 1; color: var(--muted); }
 .grid.mini .cell.picked .busy { color: #fff; }
 .btn:disabled { opacity: .45; }
+
+/* Urlaub / Krank / Feiertag */
+.segment { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--line); border-radius: 12px; padding: 3px; margin: 10px 0 2px; }
+.segment button { flex: 1; min-height: 38px; border: 0; border-radius: 9px; background: none; font-weight: 500; }
+.segment button.active { background: var(--surface); box-shadow: 0 1px 3px rgba(0,0,0,.15); font-weight: 700; }
+.pill.credit { background: transparent; border: 1.5px solid; line-height: 1.3; }
+.entry .stripe.credit { opacity: .45; }
+.cell.holiday .num { color: var(--danger); }
+.holiday-banner { background: var(--surface); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 8px; font-weight: 600; }
+
+/* Stundenkonto */
+.acc-row { display: flex; justify-content: space-between; padding: 6px 0; border-top: 1px solid var(--line); }
+.acc-row:first-of-type { border-top: 0; }
+.acc-row.big { font-weight: 700; font-size: 1.1rem; }
+.acc-row.plus span:last-child { color: #16a34a; }
+.acc-row.minus span:last-child { color: var(--danger); }
