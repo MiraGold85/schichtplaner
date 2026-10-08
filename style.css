@@ -221,3 +221,13 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 .limit-over { background: #dc2626; }
 .limit-text.near { color: #b45309; }
 .limit-text.over { color: var(--danger); font-weight: 600; }
+
+/* Kopieren */
+.copy-btn { margin-top: 12px; }
+.grid.mini .cell { min-height: 44px; position: relative; justify-content: center; background: var(--bg); }
+.grid.mini .cell.picked { color: #fff; }
+.grid.mini .cell.picked .num { color: #fff; }
+.grid.mini .cell.source { outline: 2px dashed var(--muted); outline-offset: -2px; opacity: .6; }
+.grid.mini .busy { position: absolute; bottom: 1px; left: 0; right: 0; font-size: .8rem; line-height: 1; color: var(--muted); }
+.grid.mini .cell.picked .busy { color: #fff; }
+.btn:disabled { opacity: .45; }

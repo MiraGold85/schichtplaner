@@ -97,6 +97,7 @@ const $ = id => document.getElementById(id);
 function el(tag, attrs = {}, ...children) {
   const n = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs)) {
+    if (v == null) continue;
     if (k === 'class') n.className = v;
     else if (k === 'style') n.style.cssText = v;
     else if (k.startsWith('on')) n.addEventListener(k.slice(2), v);
@@ -296,6 +297,7 @@ function openShiftDialog(occurrence) {
   $('shift-note').value = o.note || '';
   $('shift-title').value = o.title || '';
   $('shift-delete').hidden = !occurrence;
+  $('shift-copy').hidden = !occurrence;
   $('plan-hint').hidden = !(occurrence && occurrence.kind === 'plan');
   // neue Einträge starten beim zuletzt genutzten Arbeitgeber (private Termine überspringen)
   const lastWork = state.shifts.filter(s => !isPrivate(s)).pop();
@@ -365,6 +367,94 @@ $('shift-delete').addEventListener('click', () => {
 });
 
 $('shift-cancel').addEventListener('click', () => $('shift-dialog').close());
+
+/* ---------- Kopieren ---------- */
+
+let copySource = null;
+let copyDates = new Set();
+const copyView = { year: 0, month: 0 };
+
+function openCopyDialog(source) {
+  copySource = source;
+  copyDates = new Set();
+  const d = fromISO(source.date);
+  copyView.year = d.getFullYear(); copyView.month = d.getMonth();
+  const emp = employerById(source.employerId);
+  const name = isPrivate(source) ? source.title : emp.name;
+  const time = source.end ? `${source.start}–${source.end} Uhr` : `${source.start} Uhr`;
+  $('copy-summary').textContent = `${name} · ${time} (vom ${fmtShortDate(source.date)})`;
+  $('copy-weeks').replaceChildren(...[1, 2, 3, 4, 6, 8].map(n =>
+    el('button', {
+      type: 'button', class: 'chip',
+      onclick: () => {
+        copyDates = new Set(Array.from({ length: n }, (_, i) => addDays(source.date, 7 * (i + 1))));
+        renderCopyGrid();
+      },
+    }, n === 1 ? '1 Woche' : `${n} Wochen`)));
+  renderCopyGrid();
+  $('copy-dialog').showModal();
+}
+
+function renderCopyGrid() {
+  $('copy-month').textContent = monthName(copyView.year, copyView.month);
+  const grid = $('copy-grid');
+  grid.replaceChildren();
+  const first = new Date(copyView.year, copyView.month, 1);
+  const start = new Date(copyView.year, copyView.month, 1 - ((first.getDay() || 7) - 1));
+  const color = employerById(copySource.employerId).color;
+  for (let i = 0; i < 42; i++) {
+    const d = new Date(start); d.setDate(start.getDate() + i);
+    if (i === 35 && d.getMonth() !== copyView.month) break;
+    const iso = toISO(d);
+    const isSource = iso === copySource.date;
+    const on = copyDates.has(iso);
+    grid.append(el('button', {
+      type: 'button',
+      class: 'cell' + (d.getMonth() !== copyView.month ? ' other' : '') + (on ? ' picked' : '') + (isSource ? ' source' : ''),
+      style: on ? `background:${color}` : '',
+      disabled: isSource ? '' : null,
+      onclick: () => { on ? copyDates.delete(iso) : copyDates.add(iso); renderCopyGrid(); },
+    }, el('span', { class: 'num' }, String(d.getDate())),
+      occurrencesOn(iso).length ? el('span', { class: 'busy' }, '•') : null));
+  }
+  const n = copyDates.size;
+  const prefix = `${copyView.year}-${pad(copyView.month + 1)}`;
+  const elsewhere = [...copyDates].filter(d => !d.startsWith(prefix)).length;
+  $('copy-count').textContent = n ? `${n} Tag${n === 1 ? '' : 'e'} ausgewählt` + (elsewhere ? ` (davon ${elsewhere} in ${elsewhere === 1 ? 'einem anderen Monat' : 'anderen Monaten'})` : '') : 'Noch keine Tage ausgewählt. Punkte zeigen Tage, an denen schon etwas eingetragen ist.';
+  $('copy-save').disabled = !n;
+}
+
+$('shift-copy').addEventListener('click', () => {
+  const src = editing;
+  $('shift-dialog').close();
+  openCopyDialog(src);
+});
+
+$('copy-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const src = copySource;
+  let added = 0;
+  for (const date of [...copyDates].sort()) {
+    // gleichen Termin am selben Tag nicht doppelt anlegen
+    const exists = occurrencesOn(date).some(o => o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
+    if (exists) continue;
+    const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', note: src.note || '' };
+    if (isPrivate(src)) copy.title = src.title;
+    state.shifts.push(copy);
+    added++;
+  }
+  save();
+  $('copy-dialog').close();
+  const skipped = copyDates.size - added;
+  toast(added
+    ? `${added} Termin${added === 1 ? '' : 'e'} kopiert` + (skipped ? ` (${skipped} gab es schon)` : '')
+    : 'War schon eingetragen – nichts kopiert');
+  render();
+});
+
+$('copy-cancel').addEventListener('click', () => $('copy-dialog').close());
+$('copy-prev').addEventListener('click', () => { shiftMonth(copyView, -1); renderCopyGrid(); });
+$('copy-next').addEventListener('click', () => { shiftMonth(copyView, 1); renderCopyGrid(); });
 ['shift-start', 'shift-end', 'shift-date', 'shift-note'].forEach(id => $(id).addEventListener('input', updateShiftPreview));
 
 /* ---------- Arbeitgeber-Dialog ---------- */
@@ -771,7 +861,7 @@ $('grid').addEventListener('touchend', e => {
   if (Math.abs(dx) > 60) { shiftMonth(view, dx < 0 ? 1 : -1); renderCalendar(); }
 });
 
-['shift-dialog', 'employer-dialog', 'plan-dialog'].forEach(id => closeOnBackdrop($(id)));
+['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});

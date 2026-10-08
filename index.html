@@ -125,7 +125,34 @@
         <button type="button" class="btn secondary" id="shift-cancel">Abbrechen</button>
         <button type="submit" class="btn" id="shift-save">Speichern</button>
       </div>
+      <button type="button" class="btn secondary full copy-btn" id="shift-copy" hidden>📋 Auf andere Tage kopieren</button>
       <a class="gcal" id="shift-gcal" target="_blank" rel="noopener" hidden>In Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Kopieren-Dialog -->
+  <dialog id="copy-dialog" class="sheet">
+    <form method="dialog" id="copy-form">
+      <h2>Termin kopieren</h2>
+      <p class="hint" id="copy-summary"></p>
+      <div class="field">Jede Woche, für die nächsten …
+        <div class="chips small" id="copy-weeks"></div>
+      </div>
+      <div class="field">… oder Tage antippen:</div>
+      <div class="month-nav">
+        <button type="button" class="icon-btn" id="copy-prev" aria-label="Vorheriger Monat">‹</button>
+        <span class="month-label" id="copy-month"></span>
+        <button type="button" class="icon-btn" id="copy-next" aria-label="Nächster Monat">›</button>
+      </div>
+      <div class="weekdays">
+        <span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span>
+      </div>
+      <div class="grid mini" id="copy-grid"></div>
+      <p class="hint" id="copy-count"></p>
+      <div class="row actions">
+        <button type="button" class="btn secondary" id="copy-cancel">Abbrechen</button>
+        <button type="submit" class="btn" id="copy-save">Kopieren</button>
+      </div>
     </form>
   </dialog>
 
