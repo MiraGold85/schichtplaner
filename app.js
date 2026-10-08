@@ -864,6 +864,21 @@ $('grid').addEventListener('touchend', e => {
 ['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
-if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+if ('serviceWorker' in navigator) {
+  // Updates automatisch laden: beim Öffnen/Zurückkehren nach neuer Version fragen,
+  // und sobald eine neue Version aktiv ist, die Seite einmal neu laden.
+  const hadController = !!navigator.serviceWorker.controller;
+  navigator.serviceWorker.register('sw.js', { updateViaCache: 'none' }).then(reg => {
+    document.addEventListener('visibilitychange', () => { if (!document.hidden) reg.update().catch(() => {}); });
+  }).catch(() => {});
+  let reloading = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (!hadController || reloading) return;
+    const busy = [...document.querySelectorAll('dialog')].some(d => d.open);
+    if (busy) return; // nicht mitten im Eintragen neu laden – kommt beim nächsten Öffnen
+    reloading = true;
+    location.reload();
+  });
+}
 
 render();
