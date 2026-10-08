@@ -547,7 +547,7 @@ function renderStats() {
   box.append(el('div', { class: 'card' },
     el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
     anyRate ? el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
-      el('span', {}, 'Verdienst (brutto)'), el('span', {}, fmtMoney(totalMoney))) : null));
+      el('span', {}, 'Verdienst'), el('span', {}, fmtMoney(totalMoney))) : null));
   if (!anyRate) box.append(el('p', { class: 'hint center' }, 'Tipp: Trag unter Einstellungen einen Stundenlohn ein, dann siehst du hier auch den Verdienst.'));
 }
 
