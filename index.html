@@ -1,0 +1,174 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#4f46e5">
+  <title>Schichtplaner</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <header class="topbar">
+    <h1 id="title">Schichtplaner</h1>
+  </header>
+
+  <main>
+    <!-- Kalender -->
+    <section id="view-calendar" class="view active">
+      <div class="month-nav">
+        <button class="icon-btn" id="prev-month" aria-label="Vorheriger Monat">‹</button>
+        <button class="month-label" id="month-label" aria-label="Zu heute springen"></button>
+        <button class="icon-btn" id="next-month" aria-label="Nächster Monat">›</button>
+      </div>
+      <div class="weekdays">
+        <span>Mo</span><span>Di</span><span>Mi</span><span>Do</span><span>Fr</span><span>Sa</span><span>So</span>
+      </div>
+      <div class="grid" id="grid"></div>
+      <div class="legend" id="legend"></div>
+      <div class="day-panel">
+        <div class="day-head">
+          <h2 id="day-title"></h2>
+          <span class="day-sum" id="day-sum"></span>
+        </div>
+        <div id="day-list"></div>
+      </div>
+    </section>
+
+    <!-- Stunden -->
+    <section id="view-stats" class="view">
+      <div class="month-nav">
+        <button class="icon-btn" id="stats-prev" aria-label="Vorheriger Monat">‹</button>
+        <span class="month-label" id="stats-label"></span>
+        <button class="icon-btn" id="stats-next" aria-label="Nächster Monat">›</button>
+      </div>
+      <div id="stats"></div>
+    </section>
+
+    <!-- Einstellungen -->
+    <section id="view-settings" class="view">
+      <div class="card">
+        <div class="card-head"><h2>Arbeitgeber</h2><button class="btn small" id="add-employer">+ Neu</button></div>
+        <div id="employer-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h2>Feste Wochenzeiten</h2><button class="btn small" id="add-plan">+ Neu</button></div>
+        <p class="hint">Für Jobs mit festen Tagen. Die Schichten erscheinen dann automatisch jede Woche im Kalender.</p>
+        <div id="plan-list"></div>
+      </div>
+      <div class="card">
+        <h2>In den Handykalender</h2>
+        <p class="hint">Exportiert deine Schichten als Kalenderdatei mit Erinnerung. Auf dem Handy mit dem Kalender öffnen (z.&nbsp;B. Samsung-Kalender). Für Google Kalender gibt es bei jeder Schicht den Knopf „In Google Kalender“.</p>
+        <label class="field">Erinnerung
+          <select id="reminder">
+            <option value="0">keine</option>
+            <option value="15">15 Minuten vorher</option>
+            <option value="30">30 Minuten vorher</option>
+            <option value="60">1 Stunde vorher</option>
+            <option value="120">2 Stunden vorher</option>
+            <option value="1440">1 Tag vorher</option>
+          </select>
+        </label>
+        <label class="field">Zeitraum
+          <select id="export-range">
+            <option value="1">ab heute, 1 Monat</option>
+            <option value="3" selected>ab heute, 3 Monate</option>
+            <option value="6">ab heute, 6 Monate</option>
+          </select>
+        </label>
+        <button class="btn full" id="export-ics">Kalenderdatei erstellen</button>
+      </div>
+      <div class="card">
+        <h2>Datensicherung</h2>
+        <p class="hint">Deine Daten liegen nur auf diesem Handy. Mach ab und zu eine Sicherung, z.&nbsp;B. in deine Dateien oder per Mail an dich selbst.</p>
+        <p class="hint" id="last-backup"></p>
+        <div class="row">
+          <button class="btn" id="backup">Sichern</button>
+          <label class="btn secondary" for="restore-file">Wiederherstellen</label>
+          <input type="file" id="restore-file" accept="application/json,.json" hidden>
+        </div>
+      </div>
+      <p class="hint center">Schichtplaner · Daten bleiben auf deinem Gerät</p>
+    </section>
+  </main>
+
+  <button class="fab" id="fab" aria-label="Schicht eintragen">+</button>
+
+  <nav class="tabbar">
+    <button data-view="calendar" class="active"><span class="ti">📅</span>Kalender</button>
+    <button data-view="stats"><span class="ti">⏱️</span>Stunden</button>
+    <button data-view="settings"><span class="ti">⚙️</span>Einstellungen</button>
+  </nav>
+
+  <!-- Schicht-Formular -->
+  <dialog id="shift-dialog" class="sheet">
+    <form method="dialog" id="shift-form">
+      <h2 id="shift-dialog-title">Schicht eintragen</h2>
+      <div class="chips" id="shift-employers"></div>
+      <label class="field">Datum <input type="date" id="shift-date" required></label>
+      <div class="row">
+        <label class="field">Von <input type="time" id="shift-start" required></label>
+        <label class="field">Bis <input type="time" id="shift-end" required></label>
+      </div>
+      <div class="chips small" id="recent-times"></div>
+      <label class="field">Notiz <span class="opt">(optional, z.&nbsp;B. Kundin, Adresse)</span>
+        <input type="text" id="shift-note" maxlength="200" autocomplete="off">
+      </label>
+      <p class="hint" id="shift-duration"></p>
+      <p class="hint warn" id="plan-hint" hidden>Dieser Termin gehört zu einer festen Wochenzeit. Änderungen gelten nur für diesen einen Tag.</p>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="shift-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="shift-cancel">Abbrechen</button>
+        <button type="submit" class="btn" id="shift-save">Speichern</button>
+      </div>
+      <a class="gcal" id="shift-gcal" target="_blank" rel="noopener" hidden>In Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Arbeitgeber-Formular -->
+  <dialog id="employer-dialog" class="sheet">
+    <form method="dialog" id="employer-form">
+      <h2 id="employer-dialog-title">Arbeitgeber</h2>
+      <label class="field">Name <input type="text" id="employer-name" required maxlength="40" autocomplete="off"></label>
+      <div class="field">Farbe <div class="colors" id="employer-colors"></div></div>
+      <label class="field">Stundenlohn in € <span class="opt">(optional)</span>
+        <input type="text" id="employer-rate" inputmode="decimal" placeholder="z. B. 14,50" autocomplete="off">
+      </label>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="employer-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="employer-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Speichern</button>
+      </div>
+    </form>
+  </dialog>
+
+  <!-- Wochenzeit-Formular -->
+  <dialog id="plan-dialog" class="sheet">
+    <form method="dialog" id="plan-form">
+      <h2 id="plan-dialog-title">Feste Wochenzeit</h2>
+      <div class="chips" id="plan-employers"></div>
+      <div class="field">Wochentage <div class="weekday-pick" id="plan-days"></div></div>
+      <div class="row">
+        <label class="field">Von <input type="time" id="plan-start" required></label>
+        <label class="field">Bis <input type="time" id="plan-end" required></label>
+      </div>
+      <div class="row">
+        <label class="field">Ab <input type="date" id="plan-from" required></label>
+        <label class="field">Bis <span class="opt">(optional)</span><input type="date" id="plan-until"></label>
+      </div>
+      <label class="field">Notiz <span class="opt">(optional)</span><input type="text" id="plan-note" maxlength="200" autocomplete="off"></label>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="plan-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="plan-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Speichern</button>
+      </div>
+      <a class="gcal" id="plan-gcal" target="_blank" rel="noopener" hidden>Als Serie in Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <div class="toast" id="toast" role="status"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
