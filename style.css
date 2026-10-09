@@ -273,3 +273,6 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 .holiday-banner div + div { margin-top: 4px; }
 #import-list .list-item { padding: 10px 0; }
 #import-list + .btn { margin-top: 8px; }
+
+#shift-duration { white-space: pre-line; }
+#plan-pause-hint:empty { display: none; }

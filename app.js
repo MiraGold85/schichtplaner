@@ -77,7 +77,17 @@ function endTime(o) {
   return pad(Math.floor(m / 60)) + ':' + pad(m % 60);
 }
 // Minuten, die ein Eintrag zählt: Arbeitszeit oder Gutschrift (Urlaub, Krank, Feiertag)
-const occMinutes = o => o.credit != null ? o.credit : (o.start && o.end ? durationMin(o.start, o.end) : 0);
+// Arbeitszeit ohne Pause
+const netMin = o => Math.max(0, durationMin(o.start, o.end) - (o.pause || 0));
+const occMinutes = o => o.credit != null ? o.credit : (o.start && o.end ? netMin(o) : 0);
+
+// Gesetzliche Mindestpause (Arbeitszeitgesetz): über 6 Std. 30 Min., über 9 Std. 45 Min.
+function pauseHint(start, end, pause) {
+  const work = durationMin(start, end) - pause;
+  if (work > 9 * 60 && pause < 45) return 'Hinweis: Bei mehr als 9 Std. Arbeit sind 45 Min. Pause vorgeschrieben.';
+  if (work > 6 * 60 && pause < 30) return 'Hinweis: Bei mehr als 6 Std. Arbeit sind 30 Min. Pause vorgeschrieben.';
+  return '';
+}
 const isCredit = o => o.kind === 'absence' || o.kind === 'holiday';
 const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + occMinutes(o), 0);
 const ABSENCE_LABEL = { urlaub: 'Urlaub', krank: 'Krank' };
@@ -155,9 +165,9 @@ function occurrencesOn(date) {
     if (date < p.from || (p.until && date > p.until)) continue;
     if (p.skips && p.skips.includes(date)) continue;
     if (absent.has(p.employerId)) continue; // Urlaub/Krank ersetzt die feste Schicht
-    const base = { id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, note: p.note || '' };
+    const base = { id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, pause: p.pause || 0, note: p.note || '' };
     // Feiertag: feste Schicht entfällt, die Stunden werden gutgeschrieben
-    if (holiday && !isCat(employerById(p.employerId))) list.push({ ...base, kind: 'holiday', holiday, credit: durationMin(p.start, p.end) });
+    if (holiday && !isCat(employerById(p.employerId))) list.push({ ...base, kind: 'holiday', holiday, credit: netMin(base) });
     else list.push({ ...base, kind: 'plan' });
   }
   return list
@@ -606,7 +616,7 @@ function renderDay() {
           isPrivate(o) && (o.title || emp.id === PRIVATE.id) ? el('span', { class: 'badge' }, emp.id === PRIVATE.id ? 'privat' : emp.name) : null),
         el('div', { class: 'when' }, isPrivate(o)
           ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
-          : `${o.start} – ${o.end} Uhr · ${fmtDuration(durationMin(o.start, o.end))}`),
+          : `${o.start} – ${o.end} Uhr · ${fmtDuration(netMin(o))}` + (o.pause ? ` (${o.pause} Min. Pause)` : '')),
         o.note ? el('div', { class: 'note' }, o.note) : null)));
   }
 }
@@ -621,7 +631,7 @@ let shiftType = 'work';    // 'work' | 'urlaub' | 'krank'
 function defaultCredit(empId, date) {
   const wd = isoWeekday(date);
   const plan = state.plans.find(p => p.employerId === empId && p.weekdays.includes(wd) && date >= p.from && (!p.until || date <= p.until));
-  if (plan) return durationMin(plan.start, plan.end);
+  if (plan) return netMin(plan);
   const emp = employerById(empId);
   if (emp && emp.account) return Math.round(emp.account.unit === 'week' ? emp.account.amount * 60 / 5 : emp.account.amount * 60 * 12 / 52 / 5);
   return null;
@@ -686,7 +696,7 @@ function recentTimes(employerId) {
     ...state.shifts.filter(s => s.employerId === employerId && s.start && s.end).slice().reverse(),
   ];
   for (const s of sources) {
-    const key = `${s.start}-${s.end}`;
+    const key = `${s.start}-${s.end}-${s.pause || 0}`;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(s);
@@ -700,6 +710,7 @@ function pickShiftEmployer(id) {
   renderEmployerChips($('shift-employers'), id, pickShiftEmployer, true);
   const priv = isCat(employerById(id));
   $('private-fields').hidden = !priv;
+  $('pause-field').hidden = priv;
   $('shift-title').required = id === PRIVATE.id; // bei Kategorien reicht der Kategoriename
   $('shift-end').required = !priv;
   $('end-opt').hidden = !priv;
@@ -708,21 +719,31 @@ function pickShiftEmployer(id) {
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
       type: 'button', class: 'chip',
-      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; updateShiftPreview(); },
-    }, `${t.start}–${t.end}`)));
+      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; $('shift-pause').value = String(t.pause || 0); updateShiftPreview(); },
+    }, `${t.start}–${t.end}` + (t.pause ? ` · ${t.pause}′ Pause` : ''))));
   // bei neuen Einträgen: Arbeitgeber -> zuletzt genutzte Zeiten vorschlagen, Privat -> leere Felder
   if (!editing) {
     $('shift-start').value = times[0] ? times[0].start : '';
     $('shift-end').value = times[0] ? times[0].end : '';
+    $('shift-pause').value = String(times[0] && times[0].pause || 0);
   }
   setShiftType(shiftType);
+}
+
+function shiftDurationText(s, e, pause) {
+  const gross = durationMin(s, e);
+  let text = 'Arbeitszeit: ' + fmtDuration(Math.max(0, gross - pause))
+    + (pause ? ` (${fmtDuration(gross)} minus ${pause} Min. Pause)` : '')
+    + (toMin(e) <= toMin(s) ? ' · bis zum nächsten Tag' : '');
+  const hint = pauseHint(s, e, pause);
+  return hint ? text + '\n' + hint : text;
 }
 
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
   const priv = isCat(employerById(shiftEmployerId));
   $('shift-duration').textContent = shiftType === 'work' && s && e && !priv
-    ? 'Dauer: ' + fmtDuration(durationMin(s, e)) + (toMin(e) <= toMin(s) ? ' (bis zum nächsten Tag)' : '')
+    ? shiftDurationText(s, e, Number($('shift-pause').value))
     : '';
   const link = $('shift-gcal');
   if (shiftType === 'work' && s && (e || priv) && shiftEmployerId && $('shift-date').value) {
@@ -740,6 +761,7 @@ function openShiftDialog(occurrence) {
   $('shift-start').value = o.start || '';
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
+  $('shift-pause').value = String(o.pause || 0);
   $('shift-title').value = o.title || '';
   $('absence-until').value = '';
   $('absence-credit').value = o.kind === 'absence' ? hoursText(o.credit) : '';
@@ -809,6 +831,8 @@ $('shift-form').addEventListener('submit', e => {
     note: $('shift-note').value.trim(),
   };
   const priv = isCat(employerById(data.employerId));
+  data.pause = priv ? 0 : Number($('shift-pause').value);
+  if (data.pause && data.end && data.pause >= durationMin(data.start, data.end)) { toast('Die Pause ist länger als die Schicht'); return; }
   if (priv) {
     data.title = $('shift-title').value.trim();
     if (!data.title && data.employerId === PRIVATE.id) { toast('Bitte eintragen, was für ein Termin es ist'); return; }
@@ -825,7 +849,7 @@ $('shift-form').addEventListener('submit', e => {
     ['absence', 'credit'].forEach(k => delete target[k]);
     Object.assign(target, data);
   } else if (editing && editing.kind === 'plan') {
-    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title'].every(k => (editing[k] || '') === data[k]);
+    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title', 'pause'].every(k => String(editing[k] || '') === String(data[k] || ''));
     if (!unchanged) {
       skipPlanDate(editing.id, editing.date);
       state.shifts.push({ id: uid(), ...data });
@@ -928,7 +952,7 @@ $('copy-form').addEventListener('submit', e => {
     // gleichen Termin am selben Tag nicht doppelt anlegen
     const exists = occurrencesOn(date).some(o => !isCredit(o) && o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
     if (exists) continue;
-    const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', note: src.note || '' };
+    const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', pause: src.pause || 0, note: src.note || '' };
     if (isPrivate(src) && src.title) copy.title = src.title;
     state.shifts.push(copy);
     added++;
@@ -946,6 +970,7 @@ $('copy-cancel').addEventListener('click', () => $('copy-dialog').close());
 $('copy-prev').addEventListener('click', () => { shiftMonth(copyView, -1); renderCopyGrid(); });
 $('copy-next').addEventListener('click', () => { shiftMonth(copyView, 1); renderCopyGrid(); });
 ['shift-start', 'shift-end', 'shift-date', 'shift-note'].forEach(id => $(id).addEventListener('input', updateShiftPreview));
+$('shift-pause').addEventListener('change', updateShiftPreview);
 $('shift-date').addEventListener('change', () => {
   if (shiftType !== 'work' && (!editing || editing.kind !== 'absence')) setShiftType(shiftType);
 });
@@ -1111,11 +1136,13 @@ function currentPlanForm() {
     start: $('plan-start').value, end: $('plan-end').value,
     from: $('plan-from').value, until: $('plan-until').value || null,
     note: $('plan-note').value.trim(),
+    pause: Number($('plan-pause').value),
   };
 }
 
 function updatePlanLink() {
   const p = currentPlanForm();
+  $('plan-pause-hint').textContent = p.start && p.end ? pauseHint(p.start, p.end, p.pause) : '';
   const link = $('plan-gcal');
   link.hidden = !(p.employerId && p.weekdays.length && p.start && p.end && p.from);
   if (!link.hidden) link.href = gcalPlanLink(p);
@@ -1131,6 +1158,7 @@ function openPlanDialog(plan) {
   $('plan-from').value = plan ? plan.from : todayISO();
   $('plan-until').value = plan && plan.until ? plan.until : '';
   $('plan-note').value = plan ? plan.note || '' : '';
+  $('plan-pause').value = String(plan && plan.pause || 0);
   $('plan-delete').hidden = !plan;
   renderPlanDays();
   pickPlanEmployer(plan ? plan.employerId : state.employers[0].id);
@@ -1142,6 +1170,7 @@ $('plan-form').addEventListener('submit', e => {
   const data = currentPlanForm();
   if (!data.weekdays.length) { toast('Bitte mindestens einen Wochentag wählen'); return; }
   if (data.start === data.end) { toast('Beginn und Ende sind gleich'); return; }
+  if (data.pause >= durationMin(data.start, data.end)) { toast('Die Pause ist länger als die Schicht'); return; }
   if (data.until && data.until < data.from) { toast('„Bis“ liegt vor „Ab“'); return; }
   if (editingPlan) Object.assign(editingPlan, data);
   else state.plans.push({ id: uid(), skips: [], ...data });
@@ -1161,6 +1190,7 @@ $('plan-delete').addEventListener('click', () => {
 
 $('plan-cancel').addEventListener('click', () => $('plan-dialog').close());
 ['plan-start', 'plan-end', 'plan-from', 'plan-until', 'plan-note'].forEach(id => $(id).addEventListener('input', updatePlanLink));
+$('plan-pause').addEventListener('change', updatePlanLink);
 
 /* ---------- Stunden ---------- */
 
@@ -1311,7 +1341,7 @@ function renderSettings() {
     const range = 'ab ' + fmtShortDate(p.from) + (p.until ? ' bis ' + fmtShortDate(p.until) : '');
     return el('button', { class: 'list-item', onclick: () => openPlanDialog(p) },
       el('i', { class: 'dot', style: `background:${emp.color};width:18px;height:18px` }),
-      el('span', { class: 'grow' }, `${days} · ${p.start}–${p.end}`, el('small', {}, `${emp.name} · ${range}`)),
+      el('span', { class: 'grow' }, `${days} · ${p.start}–${p.end}`, el('small', {}, `${emp.name}` + (p.pause ? ` · ${p.pause} Min. Pause` : '') + ` · ${range}`)),
       el('span', { class: 'hint' }, '›'));
   }));
   if (!state.plans.length) el2.append(el('p', { class: 'hint' }, 'Keine festen Wochenzeiten.'));
