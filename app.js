@@ -81,12 +81,14 @@ function endTime(o) {
 const netMin = o => Math.max(0, durationMin(o.start, o.end) - (o.pause || 0));
 const occMinutes = o => o.credit != null ? o.credit : (o.start && o.end ? netMin(o) : 0);
 
-// Gesetzliche Mindestpause (Arbeitszeitgesetz): über 6 Std. 30 Min., über 9 Std. 45 Min.
-function pauseHint(start, end, pause) {
-  const work = durationMin(start, end) - pause;
-  if (work > 9 * 60 && pause < 45) return 'Hinweis: Bei mehr als 9 Std. Arbeit sind 45 Min. Pause vorgeschrieben.';
-  if (work > 6 * 60 && pause < 30) return 'Hinweis: Bei mehr als 6 Std. Arbeit sind 30 Min. Pause vorgeschrieben.';
-  return '';
+// Pause in Minuten aus einem Eingabefeld (leer = keine)
+const readPause = id => Math.max(0, Math.round(Number(String($(id).value).replace(',', '.')))) || 0;
+const writePause = (id, min) => { $(id).value = min ? String(min) : ''; };
+
+// Schnellknöpfe für die Pause
+function setupPauseChips(chipsId, inputId, onChange) {
+  $(chipsId).replaceChildren(...[0, 15, 30, 45, 60].map(m =>
+    el('button', { type: 'button', class: 'chip', onclick: () => { writePause(inputId, m); onChange(); } }, m ? `${m} Min.` : 'keine')));
 }
 const isCredit = o => o.kind === 'absence' || o.kind === 'holiday';
 const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + occMinutes(o), 0);
@@ -719,31 +721,29 @@ function pickShiftEmployer(id) {
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
       type: 'button', class: 'chip',
-      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; $('shift-pause').value = String(t.pause || 0); updateShiftPreview(); },
+      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; writePause('shift-pause', t.pause); updateShiftPreview(); },
     }, `${t.start}–${t.end}` + (t.pause ? ` · ${t.pause}′ Pause` : ''))));
   // bei neuen Einträgen: Arbeitgeber -> zuletzt genutzte Zeiten vorschlagen, Privat -> leere Felder
   if (!editing) {
     $('shift-start').value = times[0] ? times[0].start : '';
     $('shift-end').value = times[0] ? times[0].end : '';
-    $('shift-pause').value = String(times[0] && times[0].pause || 0);
+    writePause('shift-pause', times[0] && times[0].pause);
   }
   setShiftType(shiftType);
 }
 
 function shiftDurationText(s, e, pause) {
   const gross = durationMin(s, e);
-  let text = 'Arbeitszeit: ' + fmtDuration(Math.max(0, gross - pause))
+  return 'Arbeitszeit: ' + fmtDuration(Math.max(0, gross - pause))
     + (pause ? ` (${fmtDuration(gross)} minus ${pause} Min. Pause)` : '')
     + (toMin(e) <= toMin(s) ? ' · bis zum nächsten Tag' : '');
-  const hint = pauseHint(s, e, pause);
-  return hint ? text + '\n' + hint : text;
 }
 
 function updateShiftPreview() {
   const s = $('shift-start').value, e = $('shift-end').value;
   const priv = isCat(employerById(shiftEmployerId));
   $('shift-duration').textContent = shiftType === 'work' && s && e && !priv
-    ? shiftDurationText(s, e, Number($('shift-pause').value))
+    ? shiftDurationText(s, e, readPause('shift-pause'))
     : '';
   const link = $('shift-gcal');
   if (shiftType === 'work' && s && (e || priv) && shiftEmployerId && $('shift-date').value) {
@@ -761,7 +761,7 @@ function openShiftDialog(occurrence) {
   $('shift-start').value = o.start || '';
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
-  $('shift-pause').value = String(o.pause || 0);
+  writePause('shift-pause', o.pause);
   $('shift-title').value = o.title || '';
   $('absence-until').value = '';
   $('absence-credit').value = o.kind === 'absence' ? hoursText(o.credit) : '';
@@ -831,7 +831,7 @@ $('shift-form').addEventListener('submit', e => {
     note: $('shift-note').value.trim(),
   };
   const priv = isCat(employerById(data.employerId));
-  data.pause = priv ? 0 : Number($('shift-pause').value);
+  data.pause = priv ? 0 : readPause('shift-pause');
   if (data.pause && data.end && data.pause >= durationMin(data.start, data.end)) { toast('Die Pause ist länger als die Schicht'); return; }
   if (priv) {
     data.title = $('shift-title').value.trim();
@@ -970,7 +970,8 @@ $('copy-cancel').addEventListener('click', () => $('copy-dialog').close());
 $('copy-prev').addEventListener('click', () => { shiftMonth(copyView, -1); renderCopyGrid(); });
 $('copy-next').addEventListener('click', () => { shiftMonth(copyView, 1); renderCopyGrid(); });
 ['shift-start', 'shift-end', 'shift-date', 'shift-note'].forEach(id => $(id).addEventListener('input', updateShiftPreview));
-$('shift-pause').addEventListener('change', updateShiftPreview);
+$('shift-pause').addEventListener('input', updateShiftPreview);
+setupPauseChips('shift-pause-chips', 'shift-pause', updateShiftPreview);
 $('shift-date').addEventListener('change', () => {
   if (shiftType !== 'work' && (!editing || editing.kind !== 'absence')) setShiftType(shiftType);
 });
@@ -1136,13 +1137,12 @@ function currentPlanForm() {
     start: $('plan-start').value, end: $('plan-end').value,
     from: $('plan-from').value, until: $('plan-until').value || null,
     note: $('plan-note').value.trim(),
-    pause: Number($('plan-pause').value),
+    pause: readPause('plan-pause'),
   };
 }
 
 function updatePlanLink() {
   const p = currentPlanForm();
-  $('plan-pause-hint').textContent = p.start && p.end ? pauseHint(p.start, p.end, p.pause) : '';
   const link = $('plan-gcal');
   link.hidden = !(p.employerId && p.weekdays.length && p.start && p.end && p.from);
   if (!link.hidden) link.href = gcalPlanLink(p);
@@ -1158,7 +1158,7 @@ function openPlanDialog(plan) {
   $('plan-from').value = plan ? plan.from : todayISO();
   $('plan-until').value = plan && plan.until ? plan.until : '';
   $('plan-note').value = plan ? plan.note || '' : '';
-  $('plan-pause').value = String(plan && plan.pause || 0);
+  writePause('plan-pause', plan && plan.pause);
   $('plan-delete').hidden = !plan;
   renderPlanDays();
   pickPlanEmployer(plan ? plan.employerId : state.employers[0].id);
@@ -1190,7 +1190,7 @@ $('plan-delete').addEventListener('click', () => {
 
 $('plan-cancel').addEventListener('click', () => $('plan-dialog').close());
 ['plan-start', 'plan-end', 'plan-from', 'plan-until', 'plan-note'].forEach(id => $(id).addEventListener('input', updatePlanLink));
-$('plan-pause').addEventListener('change', updatePlanLink);
+setupPauseChips('plan-pause-chips', 'plan-pause', () => {});
 
 /* ---------- Stunden ---------- */
 

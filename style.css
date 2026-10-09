@@ -275,4 +275,4 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 #import-list + .btn { margin-top: 8px; }
 
 #shift-duration { white-space: pre-line; }
-#plan-pause-hint:empty { display: none; }
+.pause-chips { margin: 6px 0 0; }
