@@ -177,6 +177,21 @@
       <label class="field">Notiz <span class="opt">(optional, z.&nbsp;B. Kundin, Adresse)</span>
         <input type="text" id="shift-note" maxlength="200" autocomplete="off">
       </label>
+      <div id="travel-fields">
+        <div class="row">
+          <label class="field">🚗 Anfahrt in Min. <span class="opt">(von zu Hause oder vom Termin davor)</span>
+            <input type="text" id="shift-travel" inputmode="numeric" placeholder="z. B. 20" autocomplete="off">
+          </label>
+          <label class="field km-field narrow">km <input type="text" id="shift-km" inputmode="decimal" autocomplete="off"></label>
+        </div>
+        <div class="chips small" id="travel-chips"></div>
+        <div class="row">
+          <label class="field">🏠 Rückfahrt in Min. <span class="opt">(zählt nur beim letzten Termin des Tages)</span>
+            <input type="text" id="shift-back" inputmode="numeric" autocomplete="off">
+          </label>
+          <label class="field km-field narrow">km <input type="text" id="shift-km-back" inputmode="decimal" autocomplete="off"></label>
+        </div>
+      </div>
       <p class="hint" id="shift-duration"></p>
       <p class="hint warn" id="plan-hint" hidden>Dieser Termin gehört zu einer festen Wochenzeit. Änderungen gelten nur für diesen einen Tag.</p>
       <div class="row actions">
@@ -224,6 +239,17 @@
       <div class="work-only">
       <label class="field">Stundenlohn in € <span class="opt">(optional – was bei dir ankommt; beim Minijob der Lohn laut Vertrag)</span>
         <input type="text" id="employer-rate" inputmode="decimal" placeholder="z. B. 14,50" autocomplete="off">
+      </label>
+      <label class="field">Fahrzeit
+        <select id="employer-travelpay">
+          <option value="none">wird nicht bezahlt</option>
+          <option value="between">wird zwischen Terminen bezahlt</option>
+          <option value="all">wird komplett bezahlt (auch von/nach Hause)</option>
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" id="employer-km"> Kilometer erfassen</label>
+      <label class="field" id="kmrate-field" hidden>Erstattung pro km in € <span class="opt">(optional, z. B. 0,30)</span>
+        <input type="text" id="employer-kmrate" inputmode="decimal" autocomplete="off">
       </label>
       <label class="check"><input type="checkbox" id="employer-minijob"> Minijob <span class="opt">(Verdienstgrenze im Monat beachten)</span></label>
       <label class="field" id="limit-field" hidden>Monatliche Verdienstgrenze in €
@@ -275,6 +301,10 @@
         <input type="text" id="plan-pause" inputmode="numeric" placeholder="Minuten, z. B. 30" autocomplete="off">
         <span class="chips small pause-chips" id="plan-pause-chips"></span>
       </label>
+      <div class="row">
+        <label class="field">🚗 Anfahrt in Min. <input type="text" id="plan-travel" inputmode="numeric" autocomplete="off"></label>
+        <label class="field">🏠 Rückfahrt in Min. <input type="text" id="plan-back" inputmode="numeric" autocomplete="off"></label>
+      </div>
       <div class="row">
         <label class="field">Ab <input type="date" id="plan-from" required></label>
         <label class="field">Bis <span class="opt">(optional)</span><input type="date" id="plan-until"></label>

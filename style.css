@@ -276,3 +276,8 @@ dialog.sheet::backdrop { background: rgba(0,0,0,.4); }
 
 #shift-duration { white-space: pre-line; }
 .pause-chips { margin: 6px 0 0; }
+
+/* Fahrzeit */
+.travel { font-size: .85rem; color: var(--muted); margin: -2px 0 6px 14px; }
+.field.narrow { flex: 0 0 80px; }
+small.block { display: block; }

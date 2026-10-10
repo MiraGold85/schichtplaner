@@ -167,7 +167,10 @@ function occurrencesOn(date) {
     if (date < p.from || (p.until && date > p.until)) continue;
     if (p.skips && p.skips.includes(date)) continue;
     if (absent.has(p.employerId)) continue; // Urlaub/Krank ersetzt die feste Schicht
-    const base = { id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, pause: p.pause || 0, note: p.note || '' };
+    const base = {
+      id: p.id, employerId: p.employerId, date, start: p.start, end: p.end, pause: p.pause || 0, note: p.note || '',
+      travel: p.travel || 0, back: p.back || 0,
+    };
     // Feiertag: feste Schicht entfällt, die Stunden werden gutgeschrieben
     if (holiday && !isCat(employerById(p.employerId))) list.push({ ...base, kind: 'holiday', holiday, credit: netMin(base) });
     else list.push({ ...base, kind: 'plan' });
@@ -313,23 +316,53 @@ function dayGaps(occ) {
   return gaps;
 }
 
-function gapLevel(gap) {
+// Mit eingetragener Anfahrt: eng, wenn die Lücke kürzer ist als die Fahrt
+function gapLevel(gap, travel = 0) {
   if (gap < 0) return 'overlap';
+  if (travel && gap < travel) return 'tight';
   if (gap < minGap()) return 'tight';
   return 'ok';
 }
 
 function dayWarning(occ) {
   let worst = null;
-  for (const g of dayGaps(occ).values()) {
-    const l = gapLevel(g);
+  for (const [o, g] of dayGaps(occ)) {
+    const l = gapLevel(g, o.travel);
     if (l === 'overlap') return 'overlap';
     if (l === 'tight') worst = 'tight';
   }
   return worst;
 }
 
-function gapText(gap) {
+/* ---------- Fahrzeiten & Kilometer ---------- */
+
+// Arbeitstermine mit Uhrzeit, in zeitlicher Reihenfolge (ohne Privates und Gutschriften)
+const timedWork = occ => occ.filter(o => !isCredit(o) && !isPrivate(o) && o.start);
+
+// Pro Tag und Arbeitgeber: Arbeit (inkl. Gutschriften), Fahrzeit, bezahlte Fahrzeit, Kilometer.
+// Rückfahrt zählt nur beim letzten Arbeitstermin des Tages.
+// „Zwischen Terminen bezahlt“: Anfahrt zählt, wenn direkt davor ein Termin desselben Arbeitgebers war.
+function dayTotals(occ) {
+  const totals = new Map();
+  const get = id => { if (!totals.has(id)) totals.set(id, { work: 0, travel: 0, paidTravel: 0, km: 0 }); return totals.get(id); };
+  for (const o of occ) if (!isPrivate(o)) get(o.employerId).work += occMinutes(o);
+  const timed = timedWork(occ);
+  timed.forEach((o, i) => {
+    const emp = employerById(o.employerId);
+    const t = get(o.employerId);
+    const last = i === timed.length - 1;
+    const there = o.travel || 0, back = last ? (o.back || 0) : 0;
+    t.travel += there + back;
+    t.km += (o.km || 0) + (last ? (o.kmBack || 0) : 0);
+    if (emp.travelPay === 'all') t.paidTravel += there + back;
+    else if (emp.travelPay === 'between' && i > 0 && timed[i - 1].employerId === o.employerId) t.paidTravel += there;
+  });
+  return totals;
+}
+const paidMinutes = t => t ? t.work + t.paidTravel : 0;
+
+function gapText(gap, travel = 0) {
+  if (travel && gap >= 0 && gap < travel) return `⚠️ ${fmtDuration(gap)} Zeit, aber ${fmtDuration(travel)} Anfahrt`;
   if (gap < 0) return `⚠️ Überschneidung: ${fmtDuration(-gap)}`;
   if (gap === 0) return '↓ direkt im Anschluss';
   return `↓ ${fmtDuration(gap)} bis zum nächsten Termin`;
@@ -408,7 +441,7 @@ function accountRange(emp, from, to, occ = occurrencesOn) {
   if (from < emp.account.start) from = emp.account.start;
   for (let d = from; d <= to; d = addDays(d, 1)) {
     soll += dailySollMin(emp.account, d);
-    for (const o of occ(d)) if (o.employerId === emp.id) ist += occMinutes(o);
+    ist += paidMinutes(dayTotals(occ(d)).get(emp.id));
   }
   return { soll, ist };
 }
@@ -592,9 +625,12 @@ function renderDay() {
   const packing = renderPacking(date, occ);
   if (packing) list.append(packing);
   const gaps = dayGaps(occ);
+  const timed = timedWork(occ);
+  const lastWork = timed[timed.length - 1];
   for (const o of occ) {
     const emp = employerById(o.employerId);
-    if (gaps.has(o)) list.append(el('div', { class: 'gap ' + gapLevel(gaps.get(o)) }, gapText(gaps.get(o))));
+    if (gaps.has(o)) list.append(el('div', { class: 'gap ' + gapLevel(gaps.get(o), o.travel) }, gapText(gaps.get(o), o.travel)));
+    if (o.travel && !isCredit(o) && !isPrivate(o)) list.append(el('div', { class: 'travel' }, `🚗 ${fmtDuration(o.travel)} Anfahrt` + (o.km ? ` · ${fmtKm(o.km)}` : '')));
     if (isCredit(o)) {
       list.append(el('button', {
         class: 'entry',
@@ -620,8 +656,13 @@ function renderDay() {
           ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
           : `${o.start} – ${o.end} Uhr · ${fmtDuration(netMin(o))}` + (o.pause ? ` (${o.pause} Min. Pause)` : '')),
         o.note ? el('div', { class: 'note' }, o.note) : null)));
+    if (o === lastWork && o.back) list.append(el('div', { class: 'travel' }, `🏠 ${fmtDuration(o.back)} Rückfahrt` + (o.kmBack ? ` · ${fmtKm(o.kmBack)}` : '')));
   }
+  const dayTravel = [...dayTotals(occ).values()].reduce((a, t) => a + t.travel, 0);
+  if (dayTravel) list.append(el('p', { class: 'hint center' }, `Unterwegs heute: ${fmtDuration(workMinutes(occ) + dayTravel)} (davon ${fmtDuration(dayTravel)} Fahrt)`));
 }
+
+const fmtKm = km => String(Math.round(km * 10) / 10).replace('.', ',') + ' km';
 
 /* ---------- Schicht-Dialog ---------- */
 
@@ -663,6 +704,7 @@ function setShiftType(type) {
   $('shift-type').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.type === shiftType));
   $('time-fields').hidden = absence;
   $('absence-fields').hidden = !absence;
+  $('travel-fields').hidden = absence || priv;
   $('shift-start').required = !absence;
   $('shift-end').required = !absence && !priv;
   $('absence-until-field').hidden = !!editing;
@@ -713,6 +755,10 @@ function pickShiftEmployer(id) {
   const priv = isCat(employerById(id));
   $('private-fields').hidden = !priv;
   $('pause-field').hidden = priv;
+  $('travel-fields').hidden = priv;
+  const emp = employerById(id);
+  document.querySelectorAll('#travel-fields .km-field').forEach(n => { n.hidden = !(emp && emp.kmEnabled); });
+  if (!editing) suggestTravel(true);
   $('shift-title').required = id === PRIVATE.id; // bei Kategorien reicht der Kategoriename
   $('shift-end').required = !priv;
   $('end-opt').hidden = !priv;
@@ -731,6 +777,22 @@ function pickShiftEmployer(id) {
   }
   setShiftType(shiftType);
 }
+
+// Halbautomatisch: Fahrzeit/km vom letzten Termin mit gleicher Notiz (z. B. Kundin), sonst vom gleichen Arbeitgeber
+let travelTouched = false;
+function suggestTravel(force = false) {
+  if (travelTouched && !force) return;
+  if (force) travelTouched = false;
+  const note = $('shift-note').value.trim().toLowerCase();
+  const mine = state.shifts.filter(x => x.employerId === shiftEmployerId && x.travel);
+  const match = (note && [...mine].reverse().find(x => (x.note || '').trim().toLowerCase() === note)) || mine[mine.length - 1];
+  $('shift-travel').value = match ? String(match.travel) : '';
+  $('shift-km').value = match && match.km ? String(match.km).replace('.', ',') : '';
+  $('shift-back').value = match && match.back ? String(match.back) : '';
+  $('shift-km-back').value = match && match.kmBack ? String(match.kmBack).replace('.', ',') : '';
+}
+const readNum = id => { const v = parseFloat(String($(id).value).replace(',', '.')); return isFinite(v) && v > 0 ? Math.round(v * 10) / 10 : 0; };
+const writeNum = (id, v) => { $(id).value = v ? String(v).replace('.', ',') : ''; };
 
 function shiftDurationText(s, e, pause) {
   const gross = durationMin(s, e);
@@ -762,6 +824,9 @@ function openShiftDialog(occurrence) {
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
   writePause('shift-pause', o.pause);
+  writeNum('shift-travel', o.travel); writeNum('shift-km', o.km);
+  writeNum('shift-back', o.back); writeNum('shift-km-back', o.kmBack);
+  travelTouched = !!occurrence;
   $('shift-title').value = o.title || '';
   $('absence-until').value = '';
   $('absence-credit').value = o.kind === 'absence' ? hoursText(o.credit) : '';
@@ -832,6 +897,11 @@ $('shift-form').addEventListener('submit', e => {
   };
   const priv = isCat(employerById(data.employerId));
   data.pause = priv ? 0 : readPause('shift-pause');
+  const kmOn = !priv && employerById(data.employerId).kmEnabled;
+  Object.assign(data, {
+    travel: priv ? 0 : readNum('shift-travel'), back: priv ? 0 : readNum('shift-back'),
+    km: kmOn ? readNum('shift-km') : 0, kmBack: kmOn ? readNum('shift-km-back') : 0,
+  });
   if (data.pause && data.end && data.pause >= durationMin(data.start, data.end)) { toast('Die Pause ist länger als die Schicht'); return; }
   if (priv) {
     data.title = $('shift-title').value.trim();
@@ -849,7 +919,7 @@ $('shift-form').addEventListener('submit', e => {
     ['absence', 'credit'].forEach(k => delete target[k]);
     Object.assign(target, data);
   } else if (editing && editing.kind === 'plan') {
-    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title', 'pause'].every(k => String(editing[k] || '') === String(data[k] || ''));
+    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title', 'pause', 'travel', 'back', 'km', 'kmBack'].every(k => String(editing[k] || '') === String(data[k] || ''));
     if (!unchanged) {
       skipPlanDate(editing.id, editing.date);
       state.shifts.push({ id: uid(), ...data });
@@ -952,7 +1022,10 @@ $('copy-form').addEventListener('submit', e => {
     // gleichen Termin am selben Tag nicht doppelt anlegen
     const exists = occurrencesOn(date).some(o => !isCredit(o) && o.employerId === src.employerId && o.start === src.start && (o.end || '') === (src.end || ''));
     if (exists) continue;
-    const copy = { id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', pause: src.pause || 0, note: src.note || '' };
+    const copy = {
+      id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', pause: src.pause || 0, note: src.note || '',
+      travel: src.travel || 0, back: src.back || 0, km: src.km || 0, kmBack: src.kmBack || 0,
+    };
     if (isPrivate(src) && src.title) copy.title = src.title;
     state.shifts.push(copy);
     added++;
@@ -971,6 +1044,10 @@ $('copy-prev').addEventListener('click', () => { shiftMonth(copyView, -1); rende
 $('copy-next').addEventListener('click', () => { shiftMonth(copyView, 1); renderCopyGrid(); });
 ['shift-start', 'shift-end', 'shift-date', 'shift-note'].forEach(id => $(id).addEventListener('input', updateShiftPreview));
 $('shift-pause').addEventListener('input', updateShiftPreview);
+['shift-travel', 'shift-km', 'shift-back', 'shift-km-back'].forEach(id => $(id).addEventListener('input', () => { travelTouched = true; }));
+$('shift-note').addEventListener('change', () => { if (!editing) suggestTravel(); });
+$('travel-chips').replaceChildren(...[10, 15, 20, 30, 45].map(m =>
+  el('button', { type: 'button', class: 'chip', onclick: () => { $('shift-travel').value = String(m); travelTouched = true; } }, `${m} Min.`)));
 setupPauseChips('shift-pause-chips', 'shift-pause', updateShiftPreview);
 $('shift-date').addEventListener('change', () => {
   if (shiftType !== 'work' && (!editing || editing.kind !== 'absence')) setShiftType(shiftType);
@@ -1006,6 +1083,10 @@ function openEmployerDialog(emp, asCategory = false) {
   $('employer-minijob').checked = !!(emp && emp.limit);
   $('employer-limit').value = emp && emp.limit ? String(emp.limit).replace('.', ',') : '';
   $('limit-field').hidden = !$('employer-minijob').checked;
+  $('employer-travelpay').value = emp && emp.travelPay || 'none';
+  $('employer-km').checked = !!(emp && emp.kmEnabled);
+  $('kmrate-field').hidden = !$('employer-km').checked;
+  writeNum('employer-kmrate', emp && emp.kmRate);
   const acc = emp && emp.account;
   $('employer-account').checked = !!acc;
   $('account-fields').hidden = !acc;
@@ -1050,7 +1131,11 @@ $('employer-form').addEventListener('submit', e => {
     };
   }
   const items = $('employer-items').value.split('\n').map(x => x.trim()).filter(Boolean);
-  const data = { name, color: employerColor, rate: num('employer-rate'), limit, account, items };
+  const kmEnabled = $('employer-km').checked;
+  const data = {
+    name, color: employerColor, rate: num('employer-rate'), limit, account, items,
+    travelPay: $('employer-travelpay').value, kmEnabled, kmRate: kmEnabled ? (num('employer-kmrate') || null) : null,
+  };
   if (editingEmployer) Object.assign(editingEmployer, data);
   else state.employers.push({ id: uid(), ...data });
   save();
@@ -1107,6 +1192,7 @@ $('employer-account').addEventListener('change', e => {
 ['employer-rate', 'employer-limit'].forEach(id => $(id).addEventListener('input', updateLimitSuggestion));
 
 $('employer-cancel').addEventListener('click', () => $('employer-dialog').close());
+$('employer-km').addEventListener('change', e => { $('kmrate-field').hidden = !e.target.checked; });
 
 /* ---------- Wochenzeit-Dialog ---------- */
 
@@ -1138,6 +1224,7 @@ function currentPlanForm() {
     from: $('plan-from').value, until: $('plan-until').value || null,
     note: $('plan-note').value.trim(),
     pause: readPause('plan-pause'),
+    travel: readNum('plan-travel'), back: readNum('plan-back'),
   };
 }
 
@@ -1159,6 +1246,7 @@ function openPlanDialog(plan) {
   $('plan-until').value = plan && plan.until ? plan.until : '';
   $('plan-note').value = plan ? plan.note || '' : '';
   writePause('plan-pause', plan && plan.pause);
+  writeNum('plan-travel', plan && plan.travel); writeNum('plan-back', plan && plan.back);
   $('plan-delete').hidden = !plan;
   renderPlanDays();
   pickPlanEmployer(plan ? plan.employerId : state.employers[0].id);
@@ -1201,14 +1289,20 @@ function renderStats() {
   // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
   const memo = new Map();
   const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
-  const per = new Map(workEmployers().map(e => [e.id, { min: 0, count: 0, credit: 0 }]));
+  const per = new Map(workEmployers().map(e => [e.id, { min: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0 }]));
   for (let d = 1; d <= days; d++) {
-    for (const o of occ(toISO(new Date(year, month, d)))) {
+    const list = occ(toISO(new Date(year, month, d)));
+    for (const o of list) {
       const p = per.get(o.employerId);
       if (!p) continue; // private Termine zählen nicht
-      p.min += occMinutes(o);
       if (isCredit(o)) p.credit += occMinutes(o);
       else p.count++;
+    }
+    for (const [id, t] of dayTotals(list)) {
+      const p = per.get(id);
+      if (!p) continue;
+      p.min += paidMinutes(t); // Arbeit + bezahlte Fahrzeit
+      p.travel += t.travel; p.paidTravel += t.paidTravel; p.km += t.km;
     }
   }
 
@@ -1220,11 +1314,14 @@ function renderStats() {
   }
 
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
-  let totalMin = 0, totalMoney = 0, anyRate = false;
+  let totalMin = 0, totalMoney = 0, anyRate = false, totalTravel = 0, totalUnpaidTravel = 0, totalKmMoney = 0;
   const card = el('div', { class: 'card' });
   for (const e of workEmployers()) {
     const p = per.get(e.id);
     totalMin += p.min;
+    totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
+    const kmMoney = e.kmEnabled && e.kmRate ? p.km * e.kmRate : 0;
+    totalKmMoney += kmMoney;
     let money = null;
     if (e.rate) { anyRate = true; money = (p.min / 60) * e.rate; totalMoney += money; }
     card.append(el('div', { class: 'stat-row' },
@@ -1232,6 +1329,8 @@ function renderStats() {
       el('div', { class: 'grow' },
         el('div', {}, e.name),
         el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}` + (p.credit ? ` · davon ${fmtHours(p.credit)} Urlaub/Krank/Feiertag` : '')),
+        p.travel ? el('small', { class: 'block' }, `🚗 ${fmtHours(p.travel)} Fahrzeit` + (p.paidTravel ? (p.paidTravel === p.travel ? ' (bezahlt, schon in den Stunden)' : ` (davon ${fmtHours(p.paidTravel)} bezahlt, schon in den Stunden)`) : ' (unbezahlt)')) : null,
+        e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
         el('div', { class: 'bar' }, el('div', { style: `width:${(p.min / max) * 100}%;background:${e.color}` }))),
       el('div', {},
         el('div', { class: 'stat-hours' }, fmtHours(p.min)),
@@ -1305,10 +1404,15 @@ function renderStats() {
     box.append(accCard);
   }
 
+  const sub = (label, value) => el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
+    el('span', {}, label), el('span', {}, value));
   box.append(el('div', { class: 'card' },
     el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
-    anyRate ? el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
-      el('span', {}, 'Verdienst'), el('span', {}, fmtMoney(totalMoney))) : null));
+    anyRate ? sub('Verdienst', fmtMoney(totalMoney)) : null,
+    totalKmMoney ? sub('Kilometergeld', fmtMoney(totalKmMoney)) : null,
+    totalTravel ? sub('Unbezahlte Fahrzeit', fmtHours(totalUnpaidTravel)) : null,
+    totalTravel ? el('div', { class: 'total', style: 'margin-top:10px' },
+      el('span', {}, '🚗 Unterwegs insgesamt'), el('span', {}, fmtHours(totalMin + totalUnpaidTravel))) : null));
   if (!anyRate) box.append(el('p', { class: 'hint center' }, 'Tipp: Trag unter Einstellungen einen Stundenlohn ein, dann siehst du hier auch den Verdienst.'));
 }
 
