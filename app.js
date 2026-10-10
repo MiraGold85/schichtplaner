@@ -342,12 +342,14 @@ const timedWork = occ => occ.filter(o => !isCredit(o) && !isPrivate(o) && o.star
 // Pro Tag und Arbeitgeber: Arbeit (inkl. Gutschriften), Fahrzeit, bezahlte Fahrzeit, Kilometer.
 // Rückfahrt zählt nur beim letzten Arbeitstermin des Tages.
 // „Zwischen Terminen bezahlt“: Anfahrt zählt, wenn direkt davor ein Termin desselben Arbeitgebers war.
-function dayTotals(occ) {
+// include: optional nur bestimmte Termine zählen (z. B. nur erledigte) – Reihenfolge/letzter Termin bleibt vom ganzen Tag
+function dayTotals(occ, include = null) {
   const totals = new Map();
   const get = id => { if (!totals.has(id)) totals.set(id, { work: 0, travel: 0, paidTravel: 0, km: 0 }); return totals.get(id); };
-  for (const o of occ) if (!isPrivate(o)) get(o.employerId).work += occMinutes(o);
+  for (const o of occ) if (!isPrivate(o) && (!include || include(o))) get(o.employerId).work += occMinutes(o);
   const timed = timedWork(occ);
   timed.forEach((o, i) => {
+    if (include && !include(o)) return;
     const emp = employerById(o.employerId);
     const t = get(o.employerId);
     const last = i === timed.length - 1;
@@ -360,6 +362,18 @@ function dayTotals(occ) {
   return totals;
 }
 const paidMinutes = t => t ? t.work + t.paidTravel : 0;
+
+// Erledigt = Endzeit ist vorbei (ohne Endzeit: Beginn). Urlaub/Krank/Feiertag zählen ab dem Tag selbst.
+function isDone(o) {
+  const today = todayISO();
+  if (o.date !== today) return o.date < today;
+  if (isCredit(o) || !o.start) return true;
+  const end = o.end || o.start;
+  if (o.end && toMin(o.end) <= toMin(o.start)) return false; // läuft über Mitternacht
+  const now = new Date();
+  return now.getHours() * 60 + now.getMinutes() >= toMin(end);
+}
+const notDone = o => !isDone(o);
 
 function gapText(gap, travel = 0) {
   if (travel && gap >= 0 && gap < travel) return `⚠️ ${fmtDuration(gap)} Zeit, aber ${fmtDuration(travel)} Anfahrt`;
@@ -719,10 +733,12 @@ function renderDay() {
           o.note ? el('div', { class: 'note' }, o.note) : null)));
       continue;
     }
-    list.append(el('button', { class: 'entry', onclick: () => openShiftDialog(o) },
+    const done = !isPrivate(o) && isDone(o);
+    list.append(el('button', { class: 'entry' + (done ? ' done' : ''), onclick: () => openShiftDialog(o) },
       el('span', { class: 'stripe', style: `background:${emp.color}` }),
       el('span', { class: 'body' },
         el('span', { class: 'who' }, isPrivate(o) ? (o.title || emp.name) : emp.name,
+          done ? el('span', { class: 'badge ok' }, '✓ erledigt') : null,
           o.kind === 'plan' ? el('span', { class: 'badge' }, 'fest') : null,
           isPrivate(o) && (o.title || emp.id === PRIVATE.id) ? el('span', { class: 'badge' }, emp.id === PRIVATE.id ? 'privat' : emp.name) : null),
         el('div', { class: 'when' }, isPrivate(o)
@@ -1362,7 +1378,7 @@ function renderStats() {
   // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
   const memo = new Map();
   const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
-  const per = new Map(workEmployers().map(e => [e.id, { min: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0 }]));
+  const per = new Map(workEmployers().map(e => [e.id, { min: 0, planned: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0 }]));
   for (let d = 1; d <= days; d++) {
     const list = occ(toISO(new Date(year, month, d)));
     for (const o of list) {
@@ -1377,6 +1393,7 @@ function renderStats() {
       p.min += paidMinutes(t); // Arbeit + bezahlte Fahrzeit
       p.travel += t.travel; p.paidTravel += t.paidTravel; p.km += t.km;
     }
+    for (const [id, t] of dayTotals(list, notDone)) if (per.has(id)) per.get(id).planned += paidMinutes(t);
   }
 
   const box = $('stats');
@@ -1387,11 +1404,14 @@ function renderStats() {
   }
 
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
-  let totalMin = 0, totalMoney = 0, anyRate = false, totalTravel = 0, totalUnpaidTravel = 0, totalKmMoney = 0;
+  let totalMin = 0, totalMoney = 0, anyRate = false, totalTravel = 0, totalUnpaidTravel = 0, totalKmMoney = 0, totalPlanned = 0, totalPlannedMoney = 0;
+  const splitText = (done, planned) => done ? `✓ ${fmtHours(done)} erledigt · 📅 ${fmtHours(planned)} geplant` : '📅 alles noch geplant';
   const card = el('div', { class: 'card' });
   for (const e of workEmployers()) {
     const p = per.get(e.id);
     totalMin += p.min;
+    totalPlanned += p.planned;
+    if (e.rate) totalPlannedMoney += (p.planned / 60) * e.rate;
     totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
     const kmMoney = e.kmEnabled && e.kmRate ? p.km * e.kmRate : 0;
     totalKmMoney += kmMoney;
@@ -1404,7 +1424,10 @@ function renderStats() {
         el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}` + (p.credit ? ` · davon ${fmtHours(p.credit)} Urlaub/Krank/Feiertag` : '')),
         p.travel ? el('small', { class: 'block' }, `🚗 ${fmtHours(p.travel)} Fahrzeit` + (p.paidTravel ? (p.paidTravel === p.travel ? ' (bezahlt, schon in den Stunden)' : ` (davon ${fmtHours(p.paidTravel)} bezahlt, schon in den Stunden)`) : ' (unbezahlt)')) : null,
         e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
-        el('div', { class: 'bar' }, el('div', { style: `width:${(p.min / max) * 100}%;background:${e.color}` }))),
+        p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
+        el('div', { class: 'bar split' },
+          el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
+          el('div', { class: 'planned', style: `width:${(p.planned / max) * 100}%;--c:${e.color}` }))),
       el('div', {},
         el('div', { class: 'stat-hours' }, fmtHours(p.min)),
         money != null ? el('div', { class: 'stat-money' }, fmtMoney(money)) : null)));
@@ -1418,12 +1441,16 @@ function renderStats() {
       limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
     } else {
       const earned = (per.get(e.id).min / 60) * e.rate;
+      const earnedDone = ((per.get(e.id).min - per.get(e.id).planned) / 60) * e.rate;
       const ratio = earned / e.limit;
       const level = ratio > 1 ? 'over' : ratio >= 0.85 ? 'near' : 'ok';
       const left = e.limit - earned;
       limitCard.append(
         el('div', { class: 'limit-head' }, el('strong', {}, fmtMoney(earned)), el('span', {}, `von ${fmtMoney(e.limit)}`)),
-        el('div', { class: 'bar big' }, el('div', { class: 'limit-' + level, style: `width:${Math.min(ratio, 1) * 100}%` })),
+        earned > earnedDone ? el('p', { class: 'hint', style: 'margin:2px 0 0' }, `davon ${fmtMoney(earnedDone)} schon verdient, ${fmtMoney(earned - earnedDone)} geplant`) : '',
+        el('div', { class: 'bar big split' },
+          el('div', { class: 'limit-' + level, style: `width:${Math.min(earnedDone / e.limit, 1) * 100}%` }),
+          el('div', { class: 'planned limit-' + level, style: `width:${Math.max(0, Math.min(ratio, 1) - Math.min(earnedDone / e.limit, 1)) * 100}%` })),
         el('p', { class: 'hint limit-text ' + level }, left >= 0
           ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtHours(Math.floor((left / e.rate) * 60 / 15) * 15)}`
           : e.account
@@ -1432,7 +1459,15 @@ function renderStats() {
     }
     box.append(limitCard);
   }
-  // Stundenkonto pro Arbeitgeber
+  // Stundenkonto pro Arbeitgeber (geplant = ab Kontostart, noch nicht erledigt)
+  const plannedOf = e => {
+    let m = 0;
+    for (let d = 1; d <= days; d++) {
+      const iso = toISO(new Date(year, month, d));
+      if (iso >= e.account.start) m += paidMinutes(dayTotals(occ(iso), notDone).get(e.id));
+    }
+    return m;
+  };
   const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
   const today = todayISO();
   for (const e of workEmployers().filter(x => x.account)) {
@@ -1452,7 +1487,8 @@ function renderStats() {
           el('p', { class: 'hint' }, sollText + ' · keine Minusstunden'),
           row('Plus aus Vormonaten', fmtSigned(carry), carry > 0 ? 'plus' : ''),
           row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
-          row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))));
+          row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
+          plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '');
         if (diff >= 0) accCard.append(row('Neue Plusstunden', fmtSigned(diff), diff > 0 ? 'plus' : ''));
         else if (carry > 0) accCard.append(row('Plus abgebaut', fmtHours(Math.round(Math.min(carry, -diff)))));
         accCard.append(row(`Plusstunden Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(endPlus), 'big ' + (endPlus > 0 ? 'plus' : '')));
@@ -1467,6 +1503,7 @@ function renderStats() {
         el('p', { class: 'hint' }, sollText),
         row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
         row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
+        plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '',
         row('Plus/Minus diesen Monat', fmtSigned(r.ist - r.soll), r.ist - r.soll >= 0 ? 'plus' : 'minus'));
       if (today >= mStart && today <= mEnd && today >= acc.start) {
         const now = accountBalance(e, today, occ);
@@ -1481,7 +1518,10 @@ function renderStats() {
     el('span', {}, label), el('span', {}, value));
   box.append(el('div', { class: 'card' },
     el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
-    anyRate ? sub('Verdienst', fmtMoney(totalMoney)) : null,
+    totalPlanned ? sub('✓ davon erledigt', fmtHours(totalMin - totalPlanned)) : null,
+    totalPlanned ? sub('📅 noch geplant', fmtHours(totalPlanned)) : null,
+    anyRate ? sub(totalPlanned ? 'Verdienst (inkl. geplant)' : 'Verdienst', fmtMoney(totalMoney)) : null,
+    anyRate && totalPlanned ? sub('bisher verdient', fmtMoney(totalMoney - totalPlannedMoney)) : null,
     totalKmMoney ? sub('Kilometergeld', fmtMoney(totalKmMoney)) : null,
     totalTravel ? sub('Unbezahlte Fahrzeit', fmtHours(totalUnpaidTravel)) : null,
     totalTravel ? el('div', { class: 'total', style: 'margin-top:10px' },

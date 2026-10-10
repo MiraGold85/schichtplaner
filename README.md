@@ -6,7 +6,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Feste Wochenzeiten (z. B. Mo + Mi 8–13 Uhr), die jede Woche automatisch im Kalender stehen – einzelne Tage lassen sich herausnehmen oder ändern
 - Einzeltermine mit Notiz (z. B. Kundin, Adresse) und Schnellwahl der zuletzt genutzten Uhrzeiten
 - Monatskalender mit farbigen Markierungen
-- Stunden- und Verdienstübersicht pro Monat
+- Stunden- und Verdienstübersicht pro Monat, getrennt nach erledigt und noch geplant
 - Pausen pro Schicht bzw. fester Wochenzeit (frei wählbar in Minuten, wird von der Arbeitszeit abgezogen)
 - Private Termine (z. B. Zahnarzt), die nicht als Arbeitszeit zählen
 - Mehrere Tage im Kalender markieren und deren Termine auf einmal löschen (mit Rückgängig)

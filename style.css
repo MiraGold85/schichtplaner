@@ -297,3 +297,14 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .toast button { background: none; border: 0; color: var(--accent); font-weight: 700; padding: 4px 2px; }
 @media (prefers-color-scheme: dark) { .toast button { color: #4f46e5; } }
 .toast.show.has-action { pointer-events: auto; }
+
+/* erledigt / geplant */
+.bar.split { display: flex; }
+.bar.split > div { flex: none; }
+.bar .planned { background: repeating-linear-gradient(45deg, var(--c, #999) 0 4px, transparent 4px 8px); opacity: .55; }
+.bar .planned.limit-ok { --c: #16a34a; }
+.bar .planned.limit-near { --c: #f59e0b; }
+.bar .planned.limit-over { --c: #dc2626; }
+.acc-row.sub { font-size: .9rem; color: var(--muted); border-top: 0; padding-top: 0; }
+.entry.done { opacity: .7; }
+.badge.ok { color: #16a34a; border-color: #16a34a; }
