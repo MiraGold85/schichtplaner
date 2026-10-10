@@ -9,6 +9,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Stunden- und Verdienstübersicht pro Monat
 - Pausen pro Schicht bzw. fester Wochenzeit (frei wählbar in Minuten, wird von der Arbeitszeit abgezogen)
 - Private Termine (z. B. Zahnarzt), die nicht als Arbeitszeit zählen
+- Mehrere Tage im Kalender markieren und deren Termine auf einmal löschen (mit Rückgängig)
 - Termine auf andere Tage kopieren (z. B. „jede Woche, 3 Wochen lang“)
 - Minijob-Grenze mit Fortschrittsbalken (Grenze in der App änderbar)
 - Stundenkonto pro Arbeitgeber: Soll pro Woche oder Monat, Startdatum, Anfangsstand, Plus-/Minusstunden

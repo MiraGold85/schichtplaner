@@ -508,12 +508,16 @@ function el(tag, attrs = {}, ...children) {
 }
 
 let toastTimer;
-function toast(msg) {
+function toast(msg, action) {
   const t = $('toast');
-  t.textContent = msg;
+  t.replaceChildren(msg);
+  t.classList.toggle('has-action', !!action);
+  if (action) {
+    t.append(el('button', { type: 'button', onclick: () => { t.classList.remove('show'); action.run(); } }, action.label));
+  }
   t.classList.add('show');
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(() => t.classList.remove('show'), 2600);
+  toastTimer = setTimeout(() => t.classList.remove('show'), action ? 7000 : 2600);
 }
 
 function closeOnBackdrop(dialog) {
@@ -531,7 +535,9 @@ function showView(name) {
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   $('title').textContent = { calendar: 'Schichtplaner', stats: 'Stunden', settings: 'Einstellungen' }[name];
-  $('fab').hidden = name !== 'calendar';
+  if (selectMode && name !== 'calendar') setSelectMode(false);
+  $('fab').hidden = name !== 'calendar' || selectMode;
+  $('select-toggle').hidden = name !== 'calendar';
   render();
 }
 
@@ -559,9 +565,15 @@ function renderCalendar() {
     const iso = toISO(d);
     const occ = occurrencesOn(iso);
     const cell = el('button', {
-      class: 'cell' + (d.getMonth() !== view.month ? ' other' : '') + (iso === today ? ' today' : '') + (iso === view.selected ? ' selected' : '') + (holidayName(iso) ? ' holiday' : ''),
+      class: 'cell' + (d.getMonth() !== view.month ? ' other' : '') + (iso === today ? ' today' : '')
+        + (selectMode ? (selectedDays.has(iso) ? ' marked' : '') : (iso === view.selected ? ' selected' : '')) + (holidayName(iso) ? ' holiday' : ''),
       'aria-label': fmtDayTitle(iso) + (holidayName(iso) ? ', ' + holidayName(iso) : '') + (occ.length ? `, ${occ.length} Termin(e)` : ''),
       onclick: () => {
+        if (selectMode) {
+          selectedDays.has(iso) ? selectedDays.delete(iso) : selectedDays.add(iso);
+          renderCalendar();
+          return;
+        }
         view.selected = iso;
         if (d.getMonth() !== view.month) { view.year = d.getFullYear(); view.month = d.getMonth(); }
         renderCalendar();
@@ -584,8 +596,69 @@ function renderCalendar() {
   legend.replaceChildren(...legendItems.map(e =>
     el('span', {}, el('i', { class: 'dot', style: `background:${e.color}` }), e.name)));
 
-  renderDay();
+  if (selectMode) renderSelectBar();
+  else renderDay();
+  $('day-panel').hidden = selectMode;
 }
+
+/* ---------- Mehrere Tage auswählen und Termine löschen ---------- */
+
+let selectMode = false;
+let selectedDays = new Set();
+let selectExcluded = new Set(); // Arbeitgeber/Kategorien, die beim Löschen ausgenommen sind
+
+function setSelectMode(on) {
+  selectMode = on;
+  selectedDays = new Set();
+  selectExcluded = new Set();
+  $('select-toggle').textContent = on ? 'Fertig' : 'Auswählen';
+  $('select-bar').hidden = !on;
+  $('fab').hidden = on || currentView !== 'calendar';
+  document.body.classList.toggle('selecting', on);
+  renderCalendar();
+}
+
+// Was würde gelöscht? Gutschriften aus festen Wochenzeiten (Feiertag) werden als „Termin entfällt“ mitgezählt
+function selectedEntries() {
+  const out = [];
+  for (const date of [...selectedDays].sort()) {
+    for (const o of occurrencesOn(date)) if (!selectExcluded.has(o.employerId)) out.push(o);
+  }
+  return out;
+}
+
+function renderSelectBar() {
+  const involved = new Map();
+  for (const date of selectedDays) for (const o of occurrencesOn(date)) involved.set(o.employerId, employerById(o.employerId));
+  const entries = selectedEntries();
+  const days = selectedDays.size;
+  $('select-info').textContent = days
+    ? `${days} Tag${days === 1 ? '' : 'e'} · ${entries.length} Termin${entries.length === 1 ? '' : 'e'} werden gelöscht`
+    : 'Tippe auf die Tage, deren Termine du löschen willst.';
+  $('select-filter').replaceChildren(...[...involved.values()].map(e =>
+    el('button', {
+      type: 'button', class: 'chip' + (selectExcluded.has(e.id) ? '' : ' active'), style: `--c:${e.color}`,
+      onclick: () => { selectExcluded.has(e.id) ? selectExcluded.delete(e.id) : selectExcluded.add(e.id); renderSelectBar(); },
+    }, el('i', { class: 'dot', style: `background:${e.color}` }), e.name)));
+  $('select-filter').hidden = involved.size < 2;
+  $('select-delete').disabled = !entries.length;
+}
+
+$('select-toggle').addEventListener('click', () => setSelectMode(!selectMode));
+$('select-delete').addEventListener('click', () => {
+  const entries = selectedEntries();
+  if (!entries.length) return;
+  const backup = JSON.stringify(state);
+  const ids = new Set(entries.filter(o => o.kind === 'shift' || o.kind === 'absence').map(o => o.id));
+  state.shifts = state.shifts.filter(x => !ids.has(x.id));
+  for (const o of entries) if (o.kind === 'plan' || o.kind === 'holiday') skipPlanDate(o.id, o.date);
+  save();
+  setSelectMode(false);
+  toast(`${entries.length} Termin${entries.length === 1 ? '' : 'e'} gelöscht`, {
+    label: 'Rückgängig',
+    run: () => { state = JSON.parse(backup); save(); render(); toast('Wiederhergestellt'); },
+  });
+});
 
 // kleine Symbole neben dem Datum: Müll, Geburtstag
 function dayMarks(iso) {

@@ -14,6 +14,7 @@
 <body>
   <header class="topbar">
     <h1 id="title">Schichtplaner</h1>
+    <button class="btn small secondary" id="select-toggle">Auswählen</button>
   </header>
 
   <main>
@@ -29,7 +30,7 @@
       </div>
       <div class="grid" id="grid"></div>
       <div class="legend" id="legend"></div>
-      <div class="day-panel">
+      <div class="day-panel" id="day-panel">
         <div class="day-head">
           <h2 id="day-title"></h2>
           <span class="day-sum" id="day-sum"></span>
@@ -333,6 +334,12 @@
       </div>
     </form>
   </dialog>
+
+  <div class="select-bar" id="select-bar" hidden>
+    <p id="select-info"></p>
+    <div class="chips small" id="select-filter"></div>
+    <button class="btn danger full" id="select-delete" disabled>🗑️ Löschen</button>
+  </div>
 
   <div class="toast" id="toast" role="status"></div>
 
