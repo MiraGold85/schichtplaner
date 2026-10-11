@@ -4,10 +4,19 @@
 
 // In der Android-App stellt Capacitor window.Capacitor bereit; im Browser fehlt es.
 const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+// Fehler hier dürfen die App nie lahmlegen – dann fehlen eben nur die Android-Extras
+function nativePlugin(name) {
+  try {
+    const cap = window.Capacitor;
+    if (cap.registerPlugin) return cap.registerPlugin(name);
+    if (cap.Plugins && cap.Plugins[name]) return cap.Plugins[name];
+  } catch (e) { console.error('Plugin ' + name, e); }
+  return null;
+}
 const Native = NATIVE ? {
-  Notifications: window.Capacitor.registerPlugin('LocalNotifications'),
-  Filesystem: window.Capacitor.registerPlugin('Filesystem'),
-  Share: window.Capacitor.registerPlugin('Share'),
+  Notifications: nativePlugin('LocalNotifications'),
+  Filesystem: nativePlugin('Filesystem'),
+  Share: nativePlugin('Share'),
 } : null;
 
 /* ---------- Daten ---------- */
@@ -1765,7 +1774,7 @@ function buildICS(months, reminder) {
 }
 
 async function deliverFile(name, type, text) {
-  if (NATIVE) {
+  if (NATIVE && Native.Filesystem && Native.Share) {
     // Android-App: Datei zwischenspeichern und über „Teilen“ weitergeben (Dateien, Mail, Drive …)
     try {
       const { uri } = await Native.Filesystem.writeFile({ path: name, data: text, directory: 'CACHE', encoding: 'utf8' });
@@ -1819,7 +1828,7 @@ async function ensureNotificationPermission() {
   return true;
 }
 
-if (NATIVE) {
+if (NATIVE && Native.Notifications) {
   $('native-card').hidden = false;
   $('test-reminder').addEventListener('click', async () => {
     try {
