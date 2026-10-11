@@ -17,6 +17,7 @@ const Native = NATIVE ? {
   Notifications: nativePlugin('LocalNotifications'),
   Filesystem: nativePlugin('Filesystem'),
   Share: nativePlugin('Share'),
+  WakeAlarm: nativePlugin('WakeAlarm'), // eigener Wecker, siehe android/…/WakeAlarmPlugin.java
 } : null;
 
 /* ---------- Daten ---------- */
@@ -1834,9 +1835,10 @@ async function ensureNotificationPermission() {
    - Erster Termin des Tages: Weckton, Losfahr-Zeit minus Puffer
    - Weitere Termine: Hinweis zur Losfahr-Zeit (endet meist, wenn der vorige Termin endet – stört also nicht mitten im Besuch)
    - Geburtstage: morgens um 8 Uhr */
-const REMINDER_DEFAULTS = { evening: true, eveningTime: '20:00', first: true, buffer: 20, alarm: true, next: true, birthdays: true };
-// „wecker_alarm“ legt MainActivity.java an (Wecker-Lautstärke, klingelt auch bei lautlos); „wecker“ ist ein normaler Benachrichtigungston
-const wakeChannel = () => reminderSettings().alarm ? 'wecker_alarm' : 'wecker';
+const REMINDER_DEFAULTS = { evening: true, eveningTime: '20:00', first: true, buffer: 20, alarm: true, alarmSound: 'app', next: true, birthdays: true };
+// 'wecker_alarm' = über den eigenen Wecker (klingelt auch bei lautlos), 'wecker' = normale Benachrichtigung mit Ton
+const useWakeAlarm = () => reminderSettings().alarm && NATIVE && !!Native.WakeAlarm;
+const wakeChannel = () => useWakeAlarm() ? 'wecker_alarm' : 'wecker';
 const reminderSettings = () => Object.assign({}, REMINDER_DEFAULTS, state.settings.reminders || {});
 const TEST_ID = 990001;
 
@@ -1940,9 +1942,18 @@ async function scheduleReminders() {
     const old = pending.notifications.filter(n => n.id !== TEST_ID).map(n => ({ id: n.id }));
     if (old.length) await N.cancel({ notifications: old });
     const list = buildReminders();
-    if (list.length) {
+    // Wecktöne gehen an den eigenen Wecker, alles andere an die normalen Benachrichtigungen
+    const wake = list.filter(r => r.channelId === 'wecker_alarm');
+    const normal = list.filter(r => r.channelId !== 'wecker_alarm');
+    if (Native.WakeAlarm) {
+      await Native.WakeAlarm.schedule({
+        sound: reminderSettings().alarmSound,
+        alarms: wake.map(r => ({ id: r.id, at: String(r.at.getTime()), title: r.title, body: r.body })),
+      });
+    }
+    if (normal.length) {
       await N.schedule({
-        notifications: list.map(r => ({
+        notifications: normal.map(r => ({
           id: r.id, title: r.title, body: r.body, largeBody: r.largeBody, channelId: r.channelId,
           schedule: { at: r.at, allowWhileIdle: true },
         })),
@@ -1966,6 +1977,7 @@ function renderReminderSettings() {
   $('rem-first').checked = cfg.first;
   $('rem-buffer').value = String(cfg.buffer);
   $('rem-alarm').checked = cfg.alarm;
+  $('rem-sound').value = cfg.alarmSound;
   $('rem-next').checked = cfg.next;
   $('rem-birthdays').checked = cfg.birthdays;
 }
@@ -1976,12 +1988,12 @@ if (NATIVE && Native.Notifications) {
   const saveCfg = () => {
     state.settings.reminders = {
       evening: $('rem-evening').checked, eveningTime: $('rem-evening-time').value || '20:00',
-      first: $('rem-first').checked, buffer: Math.max(0, parseInt($('rem-buffer').value, 10) || 0), alarm: $('rem-alarm').checked,
+      first: $('rem-first').checked, buffer: Math.max(0, parseInt($('rem-buffer').value, 10) || 0), alarm: $('rem-alarm').checked, alarmSound: $('rem-sound').value,
       next: $('rem-next').checked, birthdays: $('rem-birthdays').checked,
     };
     save();
   };
-  ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-alarm', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
+  ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-alarm', 'rem-sound', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
   // Beim ersten Start einmal nach der Erlaubnis fragen, danach still im Hintergrund planen
   (async () => {
     try {
@@ -1998,6 +2010,14 @@ if (NATIVE && Native.Notifications) {
     try {
       if (!(await ensureNotificationPermission())) return;
       await ensureChannels();
+      if (useWakeAlarm()) {
+        await Native.WakeAlarm.test({
+          at: String(Date.now() + 2 * 60 * 1000), sound: reminderSettings().alarmSound,
+          title: 'Schichtplaner – Test', body: 'Der Weckton kommt auch bei geschlossener App und lautlosem Handy 🎉',
+        });
+        toast('Test-Weckton kommt in 2 Minuten – jetzt die App ganz schließen');
+        return;
+      }
       await Native.Notifications.schedule({
         notifications: [{
           id: TEST_ID, channelId: wakeChannel(),
