@@ -1,0 +1,71 @@
+# Baut bei jeder Änderung auf main die Android-App und stellt sie unter „Releases“ zum Download bereit.
+name: Android-App bauen
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: android-build
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Prüfen, ob der Signatur-Schlüssel eingetragen ist
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          PW: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KS" ] || [ -z "$PW" ]; then
+            echo "::error::Die Secrets ANDROID_KEYSTORE_BASE64 und ANDROID_KEYSTORE_PASSWORD fehlen (Settings → Secrets and variables → Actions)."
+            exit 1
+          fi
+
+      - name: Web-App übernehmen
+        run: |
+          npm ci
+          npm run sync
+
+      - name: Schlüssel bereitstellen
+        env:
+          KS: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: echo "$KS" | base64 -d > "$RUNNER_TEMP/release.keystore"
+
+      - name: App bauen
+        working-directory: android
+        env:
+          KEYSTORE_FILE: ${{ runner.temp }}/release.keystore
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          VERSION_CODE: ${{ github.run_number }}
+          VERSION_NAME: 1.0.${{ github.run_number }}
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon
+
+      - name: Unter „Releases“ veröffentlichen
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cp android/app/build/outputs/apk/release/app-release.apk Schichtplaner.apk
+          gh release create "v1.0.${{ github.run_number }}" Schichtplaner.apk \
+            --title "Schichtplaner 1.0.${{ github.run_number }}" \
+            --notes "Automatisch gebaut aus ${GITHUB_SHA::7}. Zum Installieren auf dem Handy „Schichtplaner.apk“ herunterladen." \
+            --latest

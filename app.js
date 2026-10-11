@@ -1,5 +1,15 @@
 'use strict';
 
+/* ---------- Android-App (Capacitor) ---------- */
+
+// In der Android-App stellt Capacitor window.Capacitor bereit; im Browser fehlt es.
+const NATIVE = !!(window.Capacitor && window.Capacitor.isNativePlatform && window.Capacitor.isNativePlatform());
+const Native = NATIVE ? {
+  Notifications: window.Capacitor.registerPlugin('LocalNotifications'),
+  Filesystem: window.Capacitor.registerPlugin('Filesystem'),
+  Share: window.Capacitor.registerPlugin('Share'),
+} : null;
+
 /* ---------- Daten ---------- */
 
 const STORAGE_KEY = 'schichtplaner-v1';
@@ -1755,6 +1765,16 @@ function buildICS(months, reminder) {
 }
 
 async function deliverFile(name, type, text) {
+  if (NATIVE) {
+    // Android-App: Datei zwischenspeichern und über „Teilen“ weitergeben (Dateien, Mail, Drive …)
+    try {
+      const { uri } = await Native.Filesystem.writeFile({ path: name, data: text, directory: 'CACHE', encoding: 'utf8' });
+      await Native.Share.share({ title: name, files: [uri], dialogTitle: 'Speichern oder teilen' });
+    } catch (e) {
+      if (!/cancel/i.test(e && e.message || '')) toast('Datei konnte nicht geteilt werden');
+    }
+    return;
+  }
   const file = new File([text], name, { type });
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
@@ -1778,6 +1798,56 @@ $('export-ics').addEventListener('click', () => {
   deliverFile(`schichten-${todayISO()}.ics`, 'text/calendar', text);
   toast(`${count} Termin(e) exportiert`);
 });
+
+/* ---------- Erinnerungen (nur Android-App) ---------- */
+
+// Fragt die nötigen Erlaubnisse ab: Benachrichtigungen + „Alarme & Erinnerungen“ (pünktliche Zustellung)
+async function ensureNotificationPermission() {
+  let perm = await Native.Notifications.checkPermissions();
+  if (perm.display !== 'granted') perm = await Native.Notifications.requestPermissions();
+  if (perm.display !== 'granted') {
+    toast('Ohne Erlaubnis für Benachrichtigungen geht es nicht – bitte in den Handy-Einstellungen erlauben');
+    return false;
+  }
+  try {
+    const exact = await Native.Notifications.checkExactNotificationSetting();
+    if (exact.exact_alarm !== 'granted') {
+      toast('Bitte „Alarme & Erinnerungen“ erlauben, damit sie pünktlich kommen');
+      await Native.Notifications.changeExactNotificationSetting();
+    }
+  } catch (e) { /* ältere Android-Versionen brauchen das nicht */ }
+  return true;
+}
+
+if (NATIVE) {
+  $('native-card').hidden = false;
+  $('test-reminder').addEventListener('click', async () => {
+    try {
+      if (!(await ensureNotificationPermission())) return;
+      await Native.Notifications.schedule({
+        notifications: [{
+          id: 990001,
+          title: 'Schichtplaner – Test',
+          body: 'Die Erinnerung kommt auch bei geschlossener App 🎉',
+          schedule: { at: new Date(Date.now() + 2 * 60 * 1000), allowWhileIdle: true },
+        }],
+      });
+      toast('Test-Erinnerung kommt in 2 Minuten – jetzt die App ganz schließen');
+    } catch (e) {
+      toast('Fehler: ' + (e && e.message || e));
+    }
+  });
+}
+
+// Links nach außen (z. B. Google Kalender) in der App im passenden Programm öffnen
+if (NATIVE) {
+  document.addEventListener('click', e => {
+    const a = e.target.closest('a[target="_blank"]');
+    if (!a) return;
+    e.preventDefault();
+    window.location.href = a.href;
+  });
+}
 
 /* ---------- Sicherung ---------- */
 
@@ -1836,7 +1906,7 @@ $('grid').addEventListener('touchend', e => {
 ['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
-if ('serviceWorker' in navigator) {
+if ('serviceWorker' in navigator && !NATIVE) {
   // Updates automatisch laden: beim Öffnen/Zurückkehren nach neuer Version fragen,
   // und sobald eine neue Version aktiv ist, die Seite einmal neu laden.
   const hadController = !!navigator.serviceWorker.controller;

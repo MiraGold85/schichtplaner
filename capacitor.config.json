@@ -1,0 +1,11 @@
+{
+  "appId": "de.miragold.schichtplaner",
+  "appName": "Schichtplaner",
+  "webDir": "www",
+  "plugins": {
+    "LocalNotifications": {
+      "smallIcon": "ic_stat_notify",
+      "iconColor": "#4f46e5"
+    }
+  }
+}
