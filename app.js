@@ -43,6 +43,7 @@ let state = loadState();
 
 function save() {
   importIndex = null;
+  if (typeof scheduleRemindersSoon === 'function') scheduleRemindersSoon();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
   } catch (e) {
@@ -1828,19 +1829,181 @@ async function ensureNotificationPermission() {
   return true;
 }
 
+/* Echte Erinnerungen: werden bei jeder Änderung für die nächsten 30 Tage bei Android vorbestellt.
+   - Vorabend (20 Uhr): Tagesüberblick mit Mitnehmliste, Müll, Geburtstagen
+   - Erster Termin des Tages: Weckton, Losfahr-Zeit minus Puffer
+   - Weitere Termine: Hinweis zur Losfahr-Zeit (endet meist, wenn der vorige Termin endet – stört also nicht mitten im Besuch)
+   - Geburtstage: morgens um 8 Uhr */
+const REMINDER_DEFAULTS = { evening: true, eveningTime: '20:00', first: true, buffer: 20, next: true, birthdays: true };
+const reminderSettings = () => Object.assign({}, REMINDER_DEFAULTS, state.settings.reminders || {});
+const TEST_ID = 990001;
+
+function atTime(date, minutes) {
+  const d = fromISO(date);
+  d.setHours(0, minutes, 0, 0);
+  return d;
+}
+
+function occLabel(o) {
+  const emp = employerById(o.employerId);
+  const who = isPrivate(o) ? (o.title || emp.name) : emp.name;
+  return who + (o.note && !isPrivate(o) ? ` (${o.note})` : '');
+}
+
+// Alle Erinnerungen für die nächsten `days` Tage berechnen (ohne Android – dadurch auch im Browser testbar)
+function buildReminders(days = 30, now = new Date()) {
+  const cfg = reminderSettings();
+  const out = [];
+  let id = 1;
+  const today = todayISO();
+  for (let i = 0; i <= days; i++) {
+    const date = addDays(today, i);
+    const occ = occurrencesOn(date);
+    const timed = occ.filter(o => !isCredit(o) && o.start);
+    timed.forEach((o, idx) => {
+      const travel = o.travel || 0;
+      const first = idx === 0;
+      if (first && cfg.first) {
+        const at = atTime(date, toMin(o.start) - travel - cfg.buffer);
+        out.push({
+          id: id++, channelId: 'wecker', at,
+          title: `In ${cfg.buffer} Min. losfahren` + (travel ? '' : ''),
+          body: `${o.start} Uhr: ${occLabel(o)}` + (travel ? ` · ${fmtDuration(travel)} Fahrt` : ''),
+        });
+      } else if (!first && cfg.next) {
+        const at = atTime(date, toMin(o.start) - (travel || 10));
+        out.push({
+          id: id++, channelId: 'termine', at,
+          title: travel ? 'Jetzt losfahren' : 'Gleich geht’s weiter',
+          body: `${o.start} Uhr: ${occLabel(o)}` + (travel ? ` · ${fmtDuration(travel)} Fahrt` : ' · in 10 Min.'),
+        });
+      }
+    });
+    if (cfg.birthdays) {
+      for (const b of birthdaysOn(date)) {
+        out.push({ id: id++, channelId: 'ueberblick', at: atTime(date, 8 * 60), title: `🎂 ${b.name} hat heute Geburtstag`, body: b.age != null ? `${b.name} wird ${b.age}.` : 'Nicht vergessen zu gratulieren!' });
+      }
+    }
+    // Vorabend-Überblick für diesen Tag
+    if (cfg.evening) {
+      const lines = [];
+      const first = timed[0];
+      if (first) lines.push(`Erster Termin: ${first.start} Uhr, ${occLabel(first)}` + (first.travel ? ` – losfahren um ${minToTime(toMin(first.start) - first.travel)}` : ''));
+      for (const o of timed.slice(1)) lines.push(`${o.start} Uhr: ${occLabel(o)}`);
+      const credits = occ.filter(isCredit);
+      for (const c of credits) lines.push(`${employerById(c.employerId).name}: ${c.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[c.absence]}`);
+      const pack = packingFor(date, occ).map(x => x.item);
+      if (pack.length) lines.push('🎒 Mitnehmen: ' + pack.join(', '));
+      for (const ev of importsOn(date)) lines.push(`${eventIcon(ev.title)} ${ev.title} – heute Abend rausstellen`);
+      for (const b of birthdaysOn(date)) lines.push(`🎂 ${b.name} hat Geburtstag`);
+      if (lines.length) {
+        const n = timed.length;
+        out.push({
+          id: id++, channelId: 'ueberblick', at: atTime(addDays(date, -1), toMin(cfg.eveningTime)),
+          title: n ? `Morgen: ${n} Termin${n === 1 ? '' : 'e'}` : 'Morgen',
+          body: lines[0], largeBody: lines.join('\n'),
+        });
+      }
+    }
+  }
+  return out.filter(r => r.at > now).sort((a, b) => a.at - b.at).slice(0, 400); // Android erlaubt nur begrenzt viele Alarme
+}
+
+const minToTime = m => { m = ((m % 1440) + 1440) % 1440; return pad(Math.floor(m / 60)) + ':' + pad(m % 60); };
+
+let channelsReady = false;
+async function ensureChannels() {
+  if (channelsReady) return;
+  const N = Native.Notifications;
+  await N.createChannel({ id: 'wecker', name: 'Erster Termin (Weckton)', description: 'Erinnerung zum Losfahren beim ersten Termin des Tages', importance: 5, sound: 'wecker.wav', vibration: true, visibility: 1 });
+  await N.createChannel({ id: 'termine', name: 'Weitere Termine', description: 'Losfahr-Hinweise für die weiteren Termine', importance: 4, vibration: true, visibility: 1 });
+  await N.createChannel({ id: 'ueberblick', name: 'Tagesüberblick & Geburtstage', description: 'Überblick am Vorabend, Geburtstage', importance: 3, visibility: 1 });
+  channelsReady = true;
+}
+
+let scheduleTimer = null;
+function scheduleRemindersSoon() {
+  if (!NATIVE || !Native.Notifications) return;
+  clearTimeout(scheduleTimer);
+  scheduleTimer = setTimeout(scheduleReminders, 1500);
+}
+
+async function scheduleReminders() {
+  const N = Native.Notifications;
+  try {
+    const perm = await N.checkPermissions();
+    if (perm.display !== 'granted') { renderReminderInfo('Benachrichtigungen sind nicht erlaubt.'); return; }
+    await ensureChannels();
+    const pending = await N.getPending();
+    const old = pending.notifications.filter(n => n.id !== TEST_ID).map(n => ({ id: n.id }));
+    if (old.length) await N.cancel({ notifications: old });
+    const list = buildReminders();
+    if (list.length) {
+      await N.schedule({
+        notifications: list.map(r => ({
+          id: r.id, title: r.title, body: r.body, largeBody: r.largeBody, channelId: r.channelId,
+          schedule: { at: r.at, allowWhileIdle: true },
+        })),
+      });
+    }
+    const next = list[0];
+    renderReminderInfo(next
+      ? `${list.length} Erinnerungen geplant. Nächste: ${next.at.toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' })} ${minToTime(next.at.getHours() * 60 + next.at.getMinutes())} – ${next.title}`
+      : 'Keine Erinnerungen in den nächsten 30 Tagen.');
+  } catch (e) {
+    renderReminderInfo('Fehler beim Planen der Erinnerungen: ' + (e && e.message || e));
+  }
+}
+
+function renderReminderInfo(text) { if ($('reminder-info')) $('reminder-info').textContent = text; }
+
+function renderReminderSettings() {
+  const cfg = reminderSettings();
+  $('rem-evening').checked = cfg.evening;
+  $('rem-evening-time').value = cfg.eveningTime;
+  $('rem-first').checked = cfg.first;
+  $('rem-buffer').value = String(cfg.buffer);
+  $('rem-next').checked = cfg.next;
+  $('rem-birthdays').checked = cfg.birthdays;
+}
+
 if (NATIVE && Native.Notifications) {
   $('native-card').hidden = false;
+  renderReminderSettings();
+  const saveCfg = () => {
+    state.settings.reminders = {
+      evening: $('rem-evening').checked, eveningTime: $('rem-evening-time').value || '20:00',
+      first: $('rem-first').checked, buffer: Math.max(0, parseInt($('rem-buffer').value, 10) || 0),
+      next: $('rem-next').checked, birthdays: $('rem-birthdays').checked,
+    };
+    save();
+  };
+  ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
+  // Beim ersten Start einmal nach der Erlaubnis fragen, danach still im Hintergrund planen
+  (async () => {
+    try {
+      if (!state.settings.remindersAsked) {
+        state.settings.remindersAsked = true;
+        save();
+        await ensureNotificationPermission();
+      }
+    } catch (e) { /* egal – Planung meldet den Zustand */ }
+    scheduleReminders();
+  })();
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) scheduleRemindersSoon(); });
   $('test-reminder').addEventListener('click', async () => {
     try {
       if (!(await ensureNotificationPermission())) return;
+      await ensureChannels();
       await Native.Notifications.schedule({
         notifications: [{
-          id: 990001,
+          id: TEST_ID, channelId: 'wecker',
           title: 'Schichtplaner – Test',
           body: 'Die Erinnerung kommt auch bei geschlossener App 🎉',
           schedule: { at: new Date(Date.now() + 2 * 60 * 1000), allowWhileIdle: true },
         }],
       });
+      scheduleRemindersSoon();
       toast('Test-Erinnerung kommt in 2 Minuten – jetzt die App ganz schließen');
     } catch (e) {
       toast('Fehler: ' + (e && e.message || e));

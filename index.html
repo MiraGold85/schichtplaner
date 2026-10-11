@@ -51,6 +51,18 @@
 
     <!-- Einstellungen -->
     <section id="view-settings" class="view">
+      <div class="card" id="native-card" hidden>
+        <h2>🔔 Erinnerungen</h2>
+        <label class="check"><input type="checkbox" id="rem-evening"> Tagesüberblick am Vorabend</label>
+        <label class="field indent">um <input type="time" id="rem-evening-time"></label>
+        <label class="check"><input type="checkbox" id="rem-first"> Erster Termin des Tages – mit Weckton</label>
+        <label class="field indent">Puffer vor dem Losfahren in Min. <input type="text" id="rem-buffer" inputmode="numeric"></label>
+        <label class="check"><input type="checkbox" id="rem-next"> Weitere Termine – Hinweis zum Losfahren</label>
+        <label class="check"><input type="checkbox" id="rem-birthdays"> Geburtstage (morgens um 8 Uhr)</label>
+        <p class="hint" id="reminder-info"></p>
+        <button class="btn secondary full" id="test-reminder">Test-Erinnerung in 2 Minuten (Weckton)</button>
+        <p class="hint">Kommt nichts an? Handy-Einstellungen → Apps → Schichtplaner → Akku → <b>Nicht eingeschränkt</b>.</p>
+      </div>
       <div class="card">
         <div class="card-head"><h2>Arbeitgeber</h2><button class="btn small" id="add-employer">+ Neu</button></div>
         <div id="employer-list"></div>
@@ -118,12 +130,6 @@
           </select>
         </label>
         <button class="btn full" id="export-ics">Kalenderdatei erstellen</button>
-      </div>
-      <div class="card" id="native-card" hidden>
-        <h2>🔔 Erinnerungen</h2>
-        <p class="hint">Test: Tippe auf den Knopf, schließe die App danach komplett (aus der Liste der offenen Apps wegwischen) und warte 2 Minuten.</p>
-        <button class="btn full" id="test-reminder">Test-Erinnerung in 2 Minuten</button>
-        <p class="hint">Kommt nichts an? Handy-Einstellungen → Apps → Schichtplaner → Akku → <b>Nicht eingeschränkt</b>.</p>
       </div>
       <div class="card">
         <h2>Datensicherung</h2>

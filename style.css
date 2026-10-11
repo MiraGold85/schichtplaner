@@ -308,3 +308,4 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .acc-row.sub { font-size: .9rem; color: var(--muted); border-top: 0; padding-top: 0; }
 .entry.done { opacity: .7; }
 .badge.ok { color: #16a34a; border-color: #16a34a; }
+.field.indent { margin: 2px 0 10px 32px; }
