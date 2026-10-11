@@ -309,3 +309,4 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .entry.done { opacity: .7; }
 .badge.ok { color: #16a34a; border-color: #16a34a; }
 .field.indent { margin: 2px 0 10px 32px; }
+.check.indent { margin: -4px 0 10px 32px; }

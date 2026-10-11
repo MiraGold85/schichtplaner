@@ -1834,7 +1834,9 @@ async function ensureNotificationPermission() {
    - Erster Termin des Tages: Weckton, Losfahr-Zeit minus Puffer
    - Weitere Termine: Hinweis zur Losfahr-Zeit (endet meist, wenn der vorige Termin endet – stört also nicht mitten im Besuch)
    - Geburtstage: morgens um 8 Uhr */
-const REMINDER_DEFAULTS = { evening: true, eveningTime: '20:00', first: true, buffer: 20, next: true, birthdays: true };
+const REMINDER_DEFAULTS = { evening: true, eveningTime: '20:00', first: true, buffer: 20, alarm: true, next: true, birthdays: true };
+// „wecker_alarm“ legt MainActivity.java an (Wecker-Lautstärke, klingelt auch bei lautlos); „wecker“ ist ein normaler Benachrichtigungston
+const wakeChannel = () => reminderSettings().alarm ? 'wecker_alarm' : 'wecker';
 const reminderSettings = () => Object.assign({}, REMINDER_DEFAULTS, state.settings.reminders || {});
 const TEST_ID = 990001;
 
@@ -1866,7 +1868,7 @@ function buildReminders(days = 30, now = new Date()) {
       if (first && cfg.first) {
         const at = atTime(date, toMin(o.start) - travel - cfg.buffer);
         out.push({
-          id: id++, channelId: 'wecker', at,
+          id: id++, channelId: wakeChannel(), at,
           title: `In ${cfg.buffer} Min. losfahren` + (travel ? '' : ''),
           body: `${o.start} Uhr: ${occLabel(o)}` + (travel ? ` · ${fmtDuration(travel)} Fahrt` : ''),
         });
@@ -1963,6 +1965,7 @@ function renderReminderSettings() {
   $('rem-evening-time').value = cfg.eveningTime;
   $('rem-first').checked = cfg.first;
   $('rem-buffer').value = String(cfg.buffer);
+  $('rem-alarm').checked = cfg.alarm;
   $('rem-next').checked = cfg.next;
   $('rem-birthdays').checked = cfg.birthdays;
 }
@@ -1973,12 +1976,12 @@ if (NATIVE && Native.Notifications) {
   const saveCfg = () => {
     state.settings.reminders = {
       evening: $('rem-evening').checked, eveningTime: $('rem-evening-time').value || '20:00',
-      first: $('rem-first').checked, buffer: Math.max(0, parseInt($('rem-buffer').value, 10) || 0),
+      first: $('rem-first').checked, buffer: Math.max(0, parseInt($('rem-buffer').value, 10) || 0), alarm: $('rem-alarm').checked,
       next: $('rem-next').checked, birthdays: $('rem-birthdays').checked,
     };
     save();
   };
-  ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
+  ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-alarm', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
   // Beim ersten Start einmal nach der Erlaubnis fragen, danach still im Hintergrund planen
   (async () => {
     try {
@@ -1997,7 +2000,7 @@ if (NATIVE && Native.Notifications) {
       await ensureChannels();
       await Native.Notifications.schedule({
         notifications: [{
-          id: TEST_ID, channelId: 'wecker',
+          id: TEST_ID, channelId: wakeChannel(),
           title: 'Schichtplaner – Test',
           body: 'Die Erinnerung kommt auch bei geschlossener App 🎉',
           schedule: { at: new Date(Date.now() + 2 * 60 * 1000), allowWhileIdle: true },
