@@ -1968,7 +1968,26 @@ async function scheduleReminders() {
   }
 }
 
-function renderReminderInfo(text) { if ($('reminder-info')) $('reminder-info').textContent = text; }
+function renderReminderInfo(text) { if ($('reminder-info')) $('reminder-info').textContent = text; renderAlarmDiagnosis(); }
+
+// Diagnose für den Weckton: Lautstärke, Erlaubnis, letzter Weckton
+async function renderAlarmDiagnosis() {
+  const box = $('alarm-diag');
+  if (!box || !NATIVE || !Native.WakeAlarm) return;
+  try {
+    const st = await Native.WakeAlarm.status();
+    const fmt = ms => ms ? new Date(+ms).toLocaleString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit' }) : '–';
+    const lines = [
+      `Wecker-Lautstärke: ${st.alarmVolume} von ${st.alarmMax}` + (st.alarmVolume === 0 ? ' ⚠️ steht auf 0 – dann ist nichts zu hören' : ''),
+      'Pünktliche Alarme erlaubt: ' + (st.canExact ? 'ja' : 'nein ⚠️'),
+      'Nächster Wecker im Handy: ' + fmt(st.nextAlarmClock),
+      'Letzter Weckton: ' + (st.lastFired ? `${fmt(st.lastFired)} – ${st.lastResult || 'kein Ergebnis'}` : 'noch keiner'),
+    ];
+    box.replaceChildren(...lines.map(t => el('div', {}, t)));
+  } catch (e) {
+    box.textContent = 'Diagnose nicht verfügbar: ' + (e && e.message || e);
+  }
+}
 
 function renderReminderSettings() {
   const cfg = reminderSettings();
@@ -1993,6 +2012,18 @@ if (NATIVE && Native.Notifications) {
     };
     save();
   };
+  if (Native.WakeAlarm) {
+    $('alarm-tools').hidden = false;
+    $('alarm-play').addEventListener('click', async () => {
+      await Native.WakeAlarm.playNow({ sound: reminderSettings().alarmSound });
+      toast('Weckton läuft – ist er zu hören?');
+      setTimeout(renderAlarmDiagnosis, 1000);
+    });
+    $('alarm-volume').addEventListener('click', async () => {
+      await Native.WakeAlarm.showAlarmVolume();
+      setTimeout(renderAlarmDiagnosis, 4000);
+    });
+  }
   ['rem-evening', 'rem-evening-time', 'rem-first', 'rem-buffer', 'rem-alarm', 'rem-sound', 'rem-next', 'rem-birthdays'].forEach(id => $(id).addEventListener('change', saveCfg));
   // Beim ersten Start einmal nach der Erlaubnis fragen, danach still im Hintergrund planen
   (async () => {

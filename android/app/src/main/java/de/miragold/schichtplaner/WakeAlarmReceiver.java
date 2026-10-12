@@ -7,7 +7,10 @@ import android.content.BroadcastReceiver;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.SharedPreferences;
 import android.media.AudioAttributes;
+import android.media.AudioFocusRequest;
+import android.media.AudioManager;
 import android.media.MediaPlayer;
 import android.media.RingtoneManager;
 import android.net.Uri;
@@ -39,6 +42,7 @@ public class WakeAlarmReceiver extends BroadcastReceiver {
         int id = intent.getIntExtra("id", 0);
         String title = intent.getStringExtra("title");
         String body = intent.getStringExtra("body");
+        record(ctx, "lastFired", String.valueOf(System.currentTimeMillis()));
         showNotification(ctx, id, title != null ? title : "Schichtplaner", body != null ? body : "");
         playSound(ctx, intent.getStringExtra("sound"), goAsync());
     }
@@ -76,30 +80,53 @@ public class WakeAlarmReceiver extends BroadcastReceiver {
         }
     }
 
-    private void playSound(Context ctx, String sound, PendingResult result) {
+    /** Für die Diagnose in der App: was beim letzten Weckton passiert ist. */
+    static void record(Context ctx, String key, String value) {
+        SharedPreferences p = ctx.getSharedPreferences(WakeAlarmScheduler.PREFS, Context.MODE_PRIVATE);
+        p.edit().putString(key, value).apply();
+    }
+
+    /** Spielt den Weckton über die Wecker-Audiospur (result darf null sein, z. B. beim Sofort-Test). */
+    static void playSound(Context ctx, String sound, PendingResult result) {
         AtomicBoolean done = new AtomicBoolean(false);
         MediaPlayer player = new MediaPlayer();
+        AudioManager am = (AudioManager) ctx.getSystemService(Context.AUDIO_SERVICE);
+        AudioAttributes attrs = new AudioAttributes.Builder()
+                .setUsage(AudioAttributes.USAGE_ALARM)
+                .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                .build();
+        AudioFocusRequest focus = null;
+        if (am != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            focus = new AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT_MAY_DUCK).setAudioAttributes(attrs).build();
+            am.requestAudioFocus(focus);
+        }
+        final AudioFocusRequest heldFocus = focus;
         Runnable finish = () -> {
             if (done.getAndSet(true)) return;
             try { player.stop(); } catch (Exception ignored) { }
             player.release();
-            result.finish();
+            if (am != null && heldFocus != null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) am.abandonAudioFocusRequest(heldFocus);
+            if (result != null) result.finish();
         };
         try {
             Uri uri = null;
             if ("system".equals(sound)) uri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM);
             if (uri == null) uri = Uri.parse(ContentResolver.SCHEME_ANDROID_RESOURCE + "://" + ctx.getPackageName() + "/raw/wecker");
-            player.setAudioAttributes(new AudioAttributes.Builder()
-                    .setUsage(AudioAttributes.USAGE_ALARM)
-                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
-                    .build());
+            player.setAudioAttributes(attrs);
             player.setDataSource(ctx, uri);
             player.setOnCompletionListener(mp -> finish.run());
-            player.setOnErrorListener((mp, what, extra) -> { finish.run(); return true; });
+            player.setOnErrorListener((mp, what, extra) -> {
+                record(ctx, "lastResult", "Abspielfehler " + what + "/" + extra);
+                finish.run();
+                return true;
+            });
             player.prepare();
             player.start();
+            int vol = am != null ? am.getStreamVolume(AudioManager.STREAM_ALARM) : -1;
+            record(ctx, "lastResult", "abgespielt (Wecker-Lautstärke " + vol + ")");
             new Handler(Looper.getMainLooper()).postDelayed(finish, MAX_PLAY_MS);
         } catch (Exception e) {
+            record(ctx, "lastResult", "Fehler: " + e.getClass().getSimpleName() + " " + e.getMessage());
             finish.run();
         }
     }

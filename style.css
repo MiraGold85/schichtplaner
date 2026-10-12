@@ -310,3 +310,5 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .badge.ok { color: #16a34a; border-color: #16a34a; }
 .field.indent { margin: 2px 0 10px 32px; }
 .check.indent { margin: -4px 0 10px 32px; }
+.diag { font-size: .8rem; margin-top: 8px; }
+#alarm-tools .btn { flex: 1; padding: 0 8px; font-size: .9rem; }
