@@ -14,6 +14,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Minijob-Grenze mit Fortschrittsbalken (Grenze in der App änderbar)
 - Stundenkonto pro Arbeitgeber: Soll pro Woche oder Monat, Startdatum, Anfangsstand, Plus-/Minusstunden
 - Urlaub und Krankheit mit Stunden-Gutschrift (auch über mehrere Tage)
+- Kundenverwaltung: Name, Arbeitgeber, Adresse (Navigation), Telefon, übliche Dauer, bevorzugte Termine, Notizen; neue Namen beim Eintragen werden automatisch gespeichert
 - Private Kategorien mit eigener Farbe (z. B. „Pferde“), zählen nicht als Arbeitszeit
 - Fahrzeiten und Kilometer pro Termin (halbautomatisch vorgeschlagen), pro Arbeitgeber einstellbar ob bezahlt; Kilometergeld
 - Abstände zwischen Terminen mit Warnung bei zu wenig Zeit oder Überschneidung

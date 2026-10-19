@@ -312,3 +312,14 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .check.indent { margin: -4px 0 10px 32px; }
 .diag { font-size: .8rem; margin-top: 8px; }
 #alarm-tools .btn { flex: 1; padding: 0 8px; font-size: .9rem; }
+
+/* Kunden */
+#client-field label { color: var(--muted); }
+.client-hint { font-size: .85rem; color: var(--muted); margin-top: 6px; }
+.client-hint:empty { display: none; }
+.client-hint div + div { margin-top: 2px; }
+.client-hint .warnnote { color: var(--text); }
+.links { display: flex; gap: 16px; margin-top: 6px; }
+.links:empty { display: none; }
+.links a { color: var(--accent); font-weight: 600; text-decoration: none; }
+.entry .client { font-size: .9rem; margin-top: 2px; }

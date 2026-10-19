@@ -82,6 +82,14 @@
         <div id="employer-list"></div>
       </div>
       <div class="card">
+        <div class="card-head"><h2>Kunden</h2><button class="btn small" id="add-client">+ Neu</button></div>
+        <div id="client-list-settings"></div>
+        <div id="client-suggestions" hidden>
+          <p class="hint">Aus deinen Notizen – antippen, um als Kunde anzulegen und die Termine zu verknüpfen:</p>
+          <div class="chips small" id="client-suggestion-chips"></div>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>Private Kategorien</h2><button class="btn small" id="add-category">+ Neu</button></div>
         <p class="hint">Für private Termine mit eigener Farbe, z.&nbsp;B. „Pferde“ für Hufschmied und Tierarzt. Zählen nie als Arbeitszeit.</p>
         <div id="category-list"></div>
@@ -181,6 +189,12 @@
         <input type="text" id="shift-title" maxlength="80" autocomplete="off">
       </label>
       <label class="field">Datum <input type="date" id="shift-date" required></label>
+      <div class="field" id="client-field">
+        <label for="shift-client">👤 Kunde <span class="opt">(optional – ein neuer Name wird gespeichert)</span></label>
+        <input type="text" id="shift-client" list="client-list" maxlength="60" autocomplete="off" placeholder="Name eintippen …">
+        <datalist id="client-list"></datalist>
+        <div class="client-hint" id="client-hint"></div>
+      </div>
       <div id="time-fields">
       <div class="row">
         <label class="field">Von <input type="time" id="shift-start" required></label>
@@ -201,7 +215,7 @@
         </label>
         <p class="hint">Bei mehreren Tagen werden nur deine Arbeitstage eingetragen (feste Wochenzeiten, sonst Mo–Fr) – ohne Feiertage.</p>
       </div>
-      <label class="field">Notiz <span class="opt">(optional, z.&nbsp;B. Kundin, Adresse)</span>
+      <label class="field">Notiz <span class="opt">(optional)</span>
         <input type="text" id="shift-note" maxlength="200" autocomplete="off">
       </label>
       <div id="travel-fields">
@@ -343,6 +357,32 @@
         <button type="submit" class="btn">Speichern</button>
       </div>
       <a class="gcal" id="plan-gcal" target="_blank" rel="noopener" hidden>Als Serie in Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Kunde -->
+  <dialog id="client-dialog" class="sheet">
+    <form method="dialog" id="client-form">
+      <h2 id="client-dialog-title">Kunde</h2>
+      <label class="field">Name <input type="text" id="client-name" required maxlength="60" autocomplete="off"></label>
+      <label class="field">Arbeitgeber <select id="client-employer"></select></label>
+      <label class="field">Adresse <input type="text" id="client-address" maxlength="150" autocomplete="off" placeholder="Straße, Ort"></label>
+      <label class="field">Telefon <input type="tel" id="client-phone" maxlength="40" autocomplete="off"></label>
+      <div class="row">
+        <label class="field">Übliche Dauer in Min. <input type="text" id="client-duration" inputmode="numeric" placeholder="z. B. 90"></label>
+      </div>
+      <label class="field">Bevorzugte Termine <span class="opt">(z. B. „Mo + Mi vormittags“)</span>
+        <input type="text" id="client-preferred" maxlength="100" autocomplete="off">
+      </label>
+      <label class="field">Notizen <span class="opt">(z. B. Schlüssel bei Nachbarin, Hund)</span>
+        <textarea id="client-notes" rows="2" maxlength="500"></textarea>
+      </label>
+      <div class="client-hint links" id="client-links"></div>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="client-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="client-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Speichern</button>
+      </div>
     </form>
   </dialog>
 

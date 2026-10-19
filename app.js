@@ -29,7 +29,7 @@ const WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const ICS_DAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 
 function emptyState() {
-  return { version: 1, employers: [], shifts: [], plans: [], settings: { reminder: 60 }, lastBackup: null };
+  return { version: 1, employers: [], shifts: [], plans: [], clients: [], settings: { reminder: 60 }, lastBackup: null };
 }
 
 function loadState() {
@@ -89,6 +89,19 @@ const employerById = id => id === PRIVATE.id ? PRIVATE : state.employers.find(e 
 const isCat = emp => !!(emp && emp.private);
 const isPrivate = o => isCat(employerById(o.employerId));
 const workEmployers = () => state.employers.filter(e => !e.private);
+
+/* ---------- Kunden ---------- */
+// Kunde: { id, name, employerId?, address, phone, duration (Min.), preferred, notes }
+const clients = () => (state.clients || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'de'));
+const clientById = id => id ? (state.clients || []).find(c => c.id === id) : null;
+function clientByName(name, employerId) {
+  const n = name.trim().toLowerCase();
+  if (!n) return null;
+  const matches = (state.clients || []).filter(c => c.name.trim().toLowerCase() === n);
+  return matches.find(c => c.employerId === employerId) || matches[0] || null;
+}
+const clientName = o => { const c = clientById(o.clientId); return c ? c.name : ''; };
+const mapsLink = address => 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(address);
 const categories = () => state.employers.filter(e => e.private);
 
 // Private Termine dürfen ohne Ende sein – für Kalender-Export gilt dann 1 Stunde
@@ -765,6 +778,7 @@ function renderDay() {
         el('div', { class: 'when' }, isPrivate(o)
           ? (o.end ? `${o.start} – ${o.end} Uhr` : `${o.start} Uhr`)
           : `${o.start} – ${o.end} Uhr · ${fmtDuration(netMin(o))}` + (o.pause ? ` (${o.pause} Min. Pause)` : '')),
+        clientName(o) ? el('div', { class: 'client' }, '👤 ' + clientName(o)) : null,
         o.note ? el('div', { class: 'note' }, o.note) : null)));
     if (o === lastWork && o.back) list.append(el('div', { class: 'travel' }, `🏠 ${fmtDuration(o.back)} Rückfahrt` + (o.kmBack ? ` · ${fmtKm(o.kmBack)}` : '')));
   }
@@ -815,6 +829,7 @@ function setShiftType(type) {
   $('time-fields').hidden = absence;
   $('absence-fields').hidden = !absence;
   $('travel-fields').hidden = absence || priv;
+  $('client-field').hidden = absence || priv;
   $('shift-start').required = !absence;
   $('shift-end').required = !absence && !priv;
   $('absence-until-field').hidden = !!editing;
@@ -865,6 +880,11 @@ function pickShiftEmployer(id) {
   const priv = isCat(employerById(id));
   $('private-fields').hidden = !priv;
   $('pause-field').hidden = priv;
+  $('client-field').hidden = priv;
+  // Vorschläge: Kunden dieses Arbeitgebers zuerst
+  const list = clients();
+  const own = list.filter(c => c.employerId === id), other = list.filter(c => c.employerId !== id);
+  $('client-list').replaceChildren(...[...own, ...other].map(c => el('option', { value: c.name })));
   $('travel-fields').hidden = priv;
   const emp = employerById(id);
   document.querySelectorAll('#travel-fields .km-field').forEach(n => { n.hidden = !(emp && emp.kmEnabled); });
@@ -877,7 +897,7 @@ function pickShiftEmployer(id) {
   $('recent-times').replaceChildren(...times.map(t =>
     el('button', {
       type: 'button', class: 'chip',
-      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; writePause('shift-pause', t.pause); updateShiftPreview(); },
+      onclick: () => { $('shift-start').value = t.start; $('shift-end').value = t.end; endTouched = true; writePause('shift-pause', t.pause); updateShiftPreview(); },
     }, `${t.start}–${t.end}` + (t.pause ? ` · ${t.pause}′ Pause` : ''))));
   // bei neuen Einträgen: Arbeitgeber -> zuletzt genutzte Zeiten vorschlagen, Privat -> leere Felder
   if (!editing) {
@@ -894,8 +914,11 @@ function suggestTravel(force = false) {
   if (travelTouched && !force) return;
   if (force) travelTouched = false;
   const note = $('shift-note').value.trim().toLowerCase();
+  const client = clientByName($('shift-client').value, shiftEmployerId);
   const mine = state.shifts.filter(x => x.employerId === shiftEmployerId && x.travel);
-  const match = (note && [...mine].reverse().find(x => (x.note || '').trim().toLowerCase() === note)) || mine[mine.length - 1];
+  const match = (client && [...mine].reverse().find(x => x.clientId === client.id))
+    || (note && [...mine].reverse().find(x => (x.note || '').trim().toLowerCase() === note))
+    || mine[mine.length - 1];
   $('shift-travel').value = match ? String(match.travel) : '';
   $('shift-km').value = match && match.km ? String(match.km).replace('.', ',') : '';
   $('shift-back').value = match && match.back ? String(match.back) : '';
@@ -933,6 +956,8 @@ function openShiftDialog(occurrence) {
   $('shift-start').value = o.start || '';
   $('shift-end').value = o.end || '';
   $('shift-note').value = o.note || '';
+  $('shift-client').value = clientName(o);
+  endTouched = !!occurrence;
   writePause('shift-pause', o.pause);
   writeNum('shift-travel', o.travel); writeNum('shift-km', o.km);
   writeNum('shift-back', o.back); writeNum('shift-km-back', o.kmBack);
@@ -948,8 +973,43 @@ function openShiftDialog(occurrence) {
   const fallback = lastWork && employerById(lastWork.employerId) ? lastWork.employerId
     : (workEmployers()[0] || categories()[0] || PRIVATE).id;
   pickShiftEmployer(o.employerId || fallback);
+  renderClientHint();
   $('shift-dialog').showModal();
 }
+
+// Kunde im Eintragen-Dialog: Ende aus üblicher Dauer, Hinweise anzeigen
+let endTouched = false;
+function applyClient() {
+  const c = clientByName($('shift-client').value, shiftEmployerId);
+  if (c && c.duration && $('shift-start').value && !endTouched) {
+    $('shift-end').value = minToTime(toMin($('shift-start').value) + c.duration);
+  }
+  if (c) suggestTravel();
+  renderClientHint();
+  updateShiftPreview();
+}
+
+function renderClientHint() {
+  const box = $('client-hint');
+  const c = clientByName($('shift-client').value, shiftEmployerId);
+  const name = $('shift-client').value.trim();
+  if (!c) {
+    box.replaceChildren(name ? el('span', {}, '✨ Neuer Kunde – wird beim Speichern angelegt') : '');
+    return;
+  }
+  const facts = [c.duration ? `üblich ${fmtDuration(c.duration)}` : '', c.preferred ? `bevorzugt: ${c.preferred}` : ''].filter(Boolean).join(' · ');
+  box.replaceChildren(
+    c.address ? el('div', {}, '📍 ' + c.address) : '',
+    facts ? el('div', {}, facts) : '',
+    c.notes ? el('div', { class: 'warnnote' }, '📝 ' + c.notes) : '',
+    el('div', { class: 'links' },
+      c.address ? el('a', { href: mapsLink(c.address), target: '_blank', rel: 'noopener' }, '🧭 Navigation') : '',
+      c.phone ? el('a', { href: 'tel:' + c.phone.replace(/[^+\d]/g, ''), target: '_blank' }, '📞 Anrufen') : ''));
+}
+$('shift-client').addEventListener('input', () => { renderClientHint(); });
+$('shift-client').addEventListener('change', applyClient);
+$('shift-start').addEventListener('change', () => { if (clientByName($('shift-client').value, shiftEmployerId)) applyClient(); });
+$('shift-end').addEventListener('input', () => { endTouched = true; });
 
 function skipPlanDate(planId, date) {
   const p = state.plans.find(x => x.id === planId);
@@ -1019,17 +1079,28 @@ $('shift-form').addEventListener('submit', e => {
   }
   if (!data.date || !data.start || (!data.end && !priv)) return;
   if (data.start === data.end) { toast('Beginn und Ende sind gleich'); return; }
+  let newClient = null;
+  const cname = priv || shiftType !== 'work' ? '' : $('shift-client').value.trim();
+  if (cname) {
+    let c = clientByName(cname, data.employerId);
+    if (!c) {
+      c = newClient = { id: uid(), name: cname, employerId: data.employerId, address: '', phone: '', duration: durationMin(data.start, data.end), preferred: '', notes: '' };
+      state.clients = state.clients || [];
+      state.clients.push(c);
+    }
+    data.clientId = c.id;
+  }
 
   if (editing && editing.kind === 'shift') {
     const target = state.shifts.find(s => s.id === editing.id);
-    ['title', 'absence', 'credit'].forEach(k => delete target[k]);
+    ['title', 'absence', 'credit', 'clientId'].forEach(k => delete target[k]);
     Object.assign(target, data);
   } else if (editing && editing.kind === 'absence') {
     const target = state.shifts.find(s => s.id === editing.id);
     ['absence', 'credit'].forEach(k => delete target[k]);
     Object.assign(target, data);
   } else if (editing && editing.kind === 'plan') {
-    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title', 'pause', 'travel', 'back', 'km', 'kmBack'].every(k => String(editing[k] || '') === String(data[k] || ''));
+    const unchanged = ['employerId', 'date', 'start', 'end', 'note', 'title', 'pause', 'travel', 'back', 'km', 'kmBack', 'clientId'].every(k => String(editing[k] || '') === String(data[k] || ''));
     if (!unchanged) {
       skipPlanDate(editing.id, editing.date);
       state.shifts.push({ id: uid(), ...data });
@@ -1041,7 +1112,7 @@ $('shift-form').addEventListener('submit', e => {
   view.selected = data.date;
   const d = fromISO(data.date); view.year = d.getFullYear(); view.month = d.getMonth();
   $('shift-dialog').close();
-  toast('Gespeichert');
+  toast(newClient ? `Gespeichert – „${newClient.name}“ als neuer Kunde angelegt` : 'Gespeichert');
   render();
 });
 
@@ -1074,7 +1145,7 @@ function openCopyDialog(source) {
   const d = fromISO(source.date);
   copyView.year = d.getFullYear(); copyView.month = d.getMonth();
   const emp = employerById(source.employerId);
-  const name = isPrivate(source) ? (source.title || emp.name) : emp.name;
+  const name = isPrivate(source) ? (source.title || emp.name) : emp.name + (clientName(source) ? ' · ' + clientName(source) : '');
   const time = source.end ? `${source.start}–${source.end} Uhr` : `${source.start} Uhr`;
   $('copy-summary').textContent = `${name} · ${time} (vom ${fmtShortDate(source.date)})`;
   $('copy-weeks').replaceChildren(...[1, 2, 3, 4, 6, 8].map(n =>
@@ -1136,6 +1207,7 @@ $('copy-form').addEventListener('submit', e => {
       id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', pause: src.pause || 0, note: src.note || '',
       travel: src.travel || 0, back: src.back || 0, km: src.km || 0, kmBack: src.kmBack || 0,
     };
+    if (src.clientId) copy.clientId = src.clientId;
     if (isPrivate(src) && src.title) copy.title = src.title;
     state.shifts.push(copy);
     added++;
@@ -1569,6 +1641,7 @@ function renderSettings() {
       el('span', { class: 'hint' }, '›'))));
   if (!categories().length) elc.append(el('p', { class: 'hint' }, 'Noch keine Kategorien.'));
 
+  renderClientList();
   renderBirthdayList();
   renderImportList();
 
@@ -1604,6 +1677,114 @@ $('region').addEventListener('change', e => {
   save();
   toast(e.target.value ? 'Feiertage für ' + REGIONS[e.target.value] + ' aktiv' : 'Feiertage ausgeschaltet');
 });
+
+/* ---------- Kunden verwalten ---------- */
+
+let editingClient = null;
+
+function renderClientList() {
+  const list = clients();
+  $('client-list-settings').replaceChildren(...list.map(c => {
+    const emp = employerById(c.employerId);
+    const info = [emp ? emp.name : '', c.duration ? fmtDuration(c.duration) : '', c.address].filter(Boolean).join(' · ');
+    return el('button', { class: 'list-item', onclick: () => openClientDialog(c) },
+      el('i', { class: 'dot', style: `background:${emp ? emp.color : '#999'};width:18px;height:18px` }),
+      el('span', { class: 'grow' }, c.name, info ? el('small', {}, info) : null),
+      el('span', { class: 'hint' }, '›'));
+  }));
+  if (!list.length) $('client-list-settings').append(el('p', { class: 'hint' }, 'Noch keine Kunden. Neue Namen beim Eintragen werden automatisch gespeichert.'));
+
+  // Vorschläge: Notizen von Arbeitsterminen ohne Kunde, die wie Namen aussehen
+  const counts = new Map();
+  for (const sh of state.shifts) {
+    if (sh.clientId || !sh.note || sh.absence || isPrivate(sh)) continue;
+    const name = sh.note.trim();
+    if (name.length > 40 || clientByName(name)) continue;
+    const key = name.toLowerCase();
+    counts.set(key, { name: (counts.get(key) || {}).name || name, n: ((counts.get(key) || {}).n || 0) + 1 });
+  }
+  const sugg = [...counts.values()].sort((a, b) => b.n - a.n).slice(0, 8);
+  $('client-suggestions').hidden = !sugg.length;
+  $('client-suggestion-chips').replaceChildren(...sugg.map(sg =>
+    el('button', { type: 'button', class: 'chip', onclick: () => adoptNoteAsClient(sg.name) }, `＋ ${sg.name} (${sg.n})`)));
+}
+
+// Notiz → Kunde: legt den Kunden an und verknüpft alle Termine mit genau dieser Notiz
+function adoptNoteAsClient(name) {
+  const key = name.trim().toLowerCase();
+  const linked = state.shifts.filter(sh => !sh.clientId && !sh.absence && (sh.note || '').trim().toLowerCase() === key);
+  const byEmp = new Map(), byDur = new Map();
+  for (const sh of linked) {
+    byEmp.set(sh.employerId, (byEmp.get(sh.employerId) || 0) + 1);
+    if (sh.end) { const d = durationMin(sh.start, sh.end); byDur.set(d, (byDur.get(d) || 0) + 1); }
+  }
+  const top = m => [...m.entries()].sort((a, b) => b[1] - a[1])[0];
+  const c = { id: uid(), name: name.trim(), employerId: top(byEmp) ? top(byEmp)[0] : null, address: '', phone: '', duration: top(byDur) ? top(byDur)[0] : 0, preferred: '', notes: '' };
+  state.clients = state.clients || [];
+  state.clients.push(c);
+  for (const sh of linked) { sh.clientId = c.id; delete sh.note; }
+  save();
+  toast(`„${c.name}“ angelegt – ${linked.length} Termin${linked.length === 1 ? '' : 'e'} verknüpft`);
+  renderSettings();
+  openClientDialog(c);
+}
+
+function openClientDialog(c) {
+  editingClient = c || null;
+  $('client-dialog-title').textContent = c ? 'Kunde bearbeiten' : 'Neuer Kunde';
+  $('client-name').value = c ? c.name : '';
+  $('client-employer').replaceChildren(el('option', { value: '' }, '– kein bestimmter –'),
+    ...workEmployers().map(e => el('option', { value: e.id }, e.name)));
+  $('client-employer').value = c && c.employerId ? c.employerId : (workEmployers()[0] ? workEmployers()[0].id : '');
+  $('client-address').value = c ? c.address || '' : '';
+  $('client-phone').value = c ? c.phone || '' : '';
+  $('client-duration').value = c && c.duration ? String(c.duration) : '';
+  $('client-preferred').value = c ? c.preferred || '' : '';
+  $('client-notes').value = c ? c.notes || '' : '';
+  $('client-delete').hidden = !c;
+  updateClientLinks();
+  $('client-dialog').showModal();
+}
+
+function updateClientLinks() {
+  const a = $('client-address').value.trim(), ph = $('client-phone').value.trim();
+  $('client-links').replaceChildren(
+    a ? el('a', { href: mapsLink(a), target: '_blank', rel: 'noopener' }, '🧭 Navigation') : '',
+    ph ? el('a', { href: 'tel:' + ph.replace(/[^+\d]/g, ''), target: '_blank' }, '📞 Anrufen') : '');
+}
+['client-address', 'client-phone'].forEach(id => $(id).addEventListener('input', updateClientLinks));
+
+$('client-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const name = $('client-name').value.trim();
+  if (!name) return;
+  const other = clientByName(name);
+  if (other && other !== editingClient && other.employerId === ($('client-employer').value || null)) { toast('Diesen Namen gibt es schon'); return; }
+  const data = {
+    name, employerId: $('client-employer').value || null,
+    address: $('client-address').value.trim(), phone: $('client-phone').value.trim(),
+    duration: Math.max(0, parseInt($('client-duration').value, 10) || 0),
+    preferred: $('client-preferred').value.trim(), notes: $('client-notes').value.trim(),
+  };
+  state.clients = state.clients || [];
+  if (editingClient) Object.assign(editingClient, data);
+  else state.clients.push({ id: uid(), ...data });
+  save();
+  $('client-dialog').close();
+  render();
+});
+$('client-delete').addEventListener('click', () => {
+  const c = editingClient;
+  const n = state.shifts.filter(sh => sh.clientId === c.id).length;
+  if (!confirm(`„${c.name}“ löschen?` + (n ? ` Die ${n} Termine bleiben erhalten, der Name steht dann in der Notiz.` : ''))) return;
+  for (const sh of state.shifts) if (sh.clientId === c.id) { sh.note = sh.note ? `${c.name}, ${sh.note}` : c.name; delete sh.clientId; }
+  state.clients = state.clients.filter(x => x !== c);
+  save();
+  $('client-dialog').close();
+  render();
+});
+$('client-cancel').addEventListener('click', () => $('client-dialog').close());
+$('add-client').addEventListener('click', () => openClientDialog());
 
 /* ---------- Geburtstage verwalten ---------- */
 
@@ -1707,7 +1888,7 @@ function endDate(o) {
 function eventTitle(o) {
   if (isPrivate(o)) return (o.title || (employerById(o.employerId) || {}).name || 'Termin') + (o.note ? ' – ' + o.note : '');
   const emp = employerById(o.employerId);
-  return 'Arbeit: ' + (emp ? emp.name : '') + (o.note ? ' – ' + o.note : '');
+  return 'Arbeit: ' + (emp ? emp.name : '') + (clientName(o) ? ' – ' + clientName(o) : '') + (o.note ? ' – ' + o.note : '');
 }
 
 function gcalLink(o) {
@@ -1851,7 +2032,8 @@ function atTime(date, minutes) {
 function occLabel(o) {
   const emp = employerById(o.employerId);
   const who = isPrivate(o) ? (o.title || emp.name) : emp.name;
-  return who + (o.note && !isPrivate(o) ? ` (${o.note})` : '');
+  const extra = isPrivate(o) ? '' : [clientName(o), o.note].filter(Boolean).join(', ');
+  return who + (extra ? ` (${extra})` : '');
 }
 
 // Alle Erinnerungen für die nächsten `days` Tage berechnen (ohne Android – dadurch auch im Browser testbar)
@@ -2129,7 +2311,7 @@ $('grid').addEventListener('touchend', e => {
   if (Math.abs(dx) > 60) { shiftMonth(view, dx < 0 ? 1 : -1); renderCalendar(); }
 });
 
-['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog'].forEach(id => closeOnBackdrop($(id)));
+['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator && !NATIVE) {
