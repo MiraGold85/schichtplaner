@@ -82,6 +82,18 @@
         <div id="employer-list"></div>
       </div>
       <div class="card">
+        <h2>🗺️ Kilometer & Fahrzeit automatisch</h2>
+        <label class="check"><input type="checkbox" id="routing-on"> Aus den Adressen berechnen</label>
+        <div id="routing-fields" hidden>
+          <label class="field">Deine Adresse (Start und Ende jedes Tages)
+            <input type="text" id="routing-home" maxlength="150" autocomplete="off" placeholder="Straße Hausnummer, Ort">
+          </label>
+          <div class="hint diag" id="routing-status"></div>
+          <button class="btn secondary small" id="routing-retry" type="button">Adressen neu suchen</button>
+          <p class="hint">Berechnet wird: zu Hause → 1. Termin → nächster Termin → … → zu Hause, per Auto. Selbst eingetragene Werte haben Vorrang. Dafür werden nur die <b>Adressen</b> (keine Namen) an kostenlose OpenStreetMap-Dienste geschickt; jede Strecke wird einmal berechnet und dann auf dem Handy gespeichert.</p>
+        </div>
+      </div>
+      <div class="card">
         <div class="card-head"><h2>Kunden</h2><button class="btn small" id="add-client">+ Neu</button></div>
         <div id="client-list-settings"></div>
         <div id="client-suggestions" hidden>
@@ -289,8 +301,19 @@
         </select>
       </label>
       <label class="check"><input type="checkbox" id="employer-km"> Kilometer erfassen</label>
-      <label class="field" id="kmrate-field" hidden>Erstattung pro km in € <span class="opt">(optional, z. B. 0,30)</span>
-        <input type="text" id="employer-kmrate" inputmode="decimal" autocomplete="off">
+      <div id="kmrate-field" hidden>
+        <label class="field">Erstattung pro km in € <span class="opt">(optional, z. B. 0,30)</span>
+          <input type="text" id="employer-kmrate" inputmode="decimal" autocomplete="off">
+        </label>
+        <label class="field">Kilometergeld gibt es für
+          <select id="employer-kmpay">
+            <option value="between">Fahrten zwischen Terminen</option>
+            <option value="all">alle Fahrten (auch von/nach Hause)</option>
+          </select>
+        </label>
+      </div>
+      <label class="field">Adresse des Arbeitsorts <span class="opt">(optional – für Termine ohne Kunde, z. B. Büro, Stall)</span>
+        <input type="text" id="employer-address" maxlength="150" autocomplete="off">
       </label>
       <label class="check"><input type="checkbox" id="employer-minijob"> Minijob <span class="opt">(Verdienstgrenze im Monat beachten)</span></label>
       <label class="field" id="limit-field" hidden>Monatliche Verdienstgrenze in €

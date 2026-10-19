@@ -209,10 +209,143 @@ function occurrencesOn(date) {
     if (holiday && !isCat(employerById(p.employerId))) list.push({ ...base, kind: 'holiday', holiday, credit: netMin(base) });
     else list.push({ ...base, kind: 'plan' });
   }
-  return list
+  const sorted = list
     .filter(o => employerById(o.employerId))
     .sort((a, b) => (isCredit(a) ? '' : a.start).localeCompare(isCredit(b) ? '' : b.start));
+  applyAutoRoutes(sorted);
+  return sorted;
 }
+
+/* ---------- Kilometer & Fahrzeit automatisch (OpenStreetMap) ---------- */
+// Strecke: zu Hause → 1. Termin → 2. Termin → … → zu Hause. Ort eines Termins = Adresse des Kunden,
+// sonst Adresse des Arbeitgebers. Manuell eingetragene Werte haben immer Vorrang.
+// Gesendet werden nur Adressen bzw. Koordinaten – keine Namen.
+const routingOn = () => !!(state.settings.routing && state.settings.routing.enabled);
+const homeLoc = () => { const r = state.settings.routing || {}; return r.lat != null ? { lat: r.lat, lon: r.lon } : null; };
+function occLoc(o) {
+  const c = clientById(o.clientId);
+  if (c && c.lat != null) return { lat: c.lat, lon: c.lon };
+  if (c && c.address) return null; // Kundenadresse noch nicht gefunden
+  const e = employerById(o.employerId);
+  return e && e.lat != null ? { lat: e.lat, lon: e.lon } : null;
+}
+const sameLoc = (a, b) => Math.abs(a.lat - b.lat) < 1e-4 && Math.abs(a.lon - b.lon) < 1e-4;
+const routeKey = (a, b) => [a, b].map(p => p.lat.toFixed(4) + ',' + p.lon.toFixed(4)).sort().join('|');
+
+function routeBetween(a, b) {
+  if (!a || !b) return null;
+  if (sameLoc(a, b)) return { km: 0, min: 0 };
+  const key = routeKey(a, b);
+  const r = (state.routes || {})[key];
+  if (r) return r;
+  queueRoute(key, a, b);
+  return null;
+}
+
+function applyAutoRoutes(occ) {
+  if (!routingOn()) return;
+  const home = homeLoc();
+  const timed = occ.filter(o => !isCredit(o) && !isPrivate(o) && o.start);
+  timed.forEach((o, i) => {
+    const here = occLoc(o);
+    const from = i === 0 ? home : occLoc(timed[i - 1]);
+    const leg = routeBetween(from, here);
+    if (leg) {
+      if (!o.travel) { o.travel = leg.min; o.autoTravel = true; }
+      if (!o.km) { o.km = leg.km; o.autoKm = true; }
+    }
+    if (i === timed.length - 1) {
+      const back = routeBetween(here, home);
+      if (back) {
+        if (!o.back) { o.back = back.min; o.autoBack = true; }
+        if (!o.kmBack) { o.kmBack = back.km; o.autoKmBack = true; }
+      }
+    }
+  });
+}
+
+// Netzwerk: Adresse → Koordinaten (Photon, Ersatz Nominatim), Strecke (OSRM). Nacheinander, mit Pause.
+const routeQueue = new Map();
+const routeFailed = new Set();
+let routeWorking = false;
+function queueRoute(key, a, b) {
+  if (routeQueue.has(key) || routeFailed.has(key)) return;
+  routeQueue.set(key, { a, b });
+  setTimeout(processRouteQueue, 0);
+}
+
+async function processRouteQueue() {
+  if (routeWorking || !routeQueue.size) return;
+  routeWorking = true;
+  let changed = false;
+  while (routeQueue.size) {
+    const [key, { a, b }] = routeQueue.entries().next().value;
+    routeQueue.delete(key);
+    try {
+      const url = `https://router.project-osrm.org/route/v1/driving/${a.lon},${a.lat};${b.lon},${b.lat}?overview=false`;
+      const res = await fetch(url);
+      const data = await res.json();
+      const r = data.routes && data.routes[0];
+      if (!r) throw new Error(data.code || 'keine Strecke');
+      state.routes = state.routes || {};
+      // Fahrzeit auf 5 Minuten aufgerundet, Strecke auf 0,1 km
+      state.routes[key] = { km: Math.round(r.distance / 100) / 10, min: Math.max(5, Math.ceil(r.duration / 60 / 5) * 5) };
+      changed = true;
+    } catch (e) {
+      routeFailed.add(key);
+      routingStatus('Strecke konnte nicht berechnet werden (keine Internetverbindung?)');
+    }
+    await new Promise(r => setTimeout(r, 400));
+  }
+  routeWorking = false;
+  if (changed) { save(); render(); }
+}
+
+async function geocode(address) {
+  const q = encodeURIComponent(address);
+  try {
+    const res = await fetch(`https://photon.komoot.io/api/?q=${q}&limit=1&lang=de`);
+    const f = (await res.json()).features || [];
+    if (f[0]) return { lat: f[0].geometry.coordinates[1], lon: f[0].geometry.coordinates[0] };
+  } catch (e) { /* weiter mit Nominatim */ }
+  const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&limit=1&countrycodes=de&q=${q}`);
+  const list = await res.json();
+  if (list[0]) return { lat: Number(list[0].lat), lon: Number(list[0].lon) };
+  return null;
+}
+
+// Koordinaten für alle Adressen (zu Hause, Kunden, Arbeitgeber) besorgen, die noch fehlen oder sich geändert haben
+let geocodeWorking = false, geocodeAgain = false;
+async function geocodeMissing() {
+  if (!routingOn()) return;
+  if (geocodeWorking) { geocodeAgain = true; return; } // läuft schon – danach noch einmal prüfen
+  geocodeWorking = true;
+  routingMsg = '';
+  const r = state.settings.routing;
+  const targets = [];
+  if (r.home && r.geoFor !== r.home) targets.push(r);
+  for (const x of [...(state.clients || []), ...workEmployers()]) if (x.address && x.geoFor !== x.address) targets.push(x);
+  const missing = [];
+  for (const t of targets) {
+    const address = t === r ? r.home : t.address;
+    try {
+      const pos = await geocode(address);
+      t.geoFor = address;
+      if (pos) { t.lat = pos.lat; t.lon = pos.lon; }
+      else { delete t.lat; delete t.lon; missing.push(t === r ? 'Zuhause' : t.name); }
+    } catch (e) {
+      routingStatus('Adressen konnten nicht gesucht werden (keine Internetverbindung?)');
+      break;
+    }
+    await new Promise(res => setTimeout(res, 1100)); // Nutzungsregeln der kostenlosen Dienste
+  }
+  geocodeWorking = false;
+  if (targets.length) { save(); render(); }
+  if (geocodeAgain) { geocodeAgain = false; await geocodeMissing(); }
+}
+
+let routingMsg = '';
+function routingStatus(msg) { routingMsg = msg; if ($('routing-status')) renderRoutingSettings(); }
 
 /* ---------- Geburtstage ---------- */
 
@@ -379,7 +512,7 @@ const timedWork = occ => occ.filter(o => !isCredit(o) && !isPrivate(o) && o.star
 // include: optional nur bestimmte Termine zählen (z. B. nur erledigte) – Reihenfolge/letzter Termin bleibt vom ganzen Tag
 function dayTotals(occ, include = null) {
   const totals = new Map();
-  const get = id => { if (!totals.has(id)) totals.set(id, { work: 0, travel: 0, paidTravel: 0, km: 0 }); return totals.get(id); };
+  const get = id => { if (!totals.has(id)) totals.set(id, { work: 0, travel: 0, paidTravel: 0, km: 0, paidKm: 0 }); return totals.get(id); };
   for (const o of occ) if (!isPrivate(o) && (!include || include(o))) get(o.employerId).work += occMinutes(o);
   const timed = timedWork(occ);
   timed.forEach((o, i) => {
@@ -389,7 +522,12 @@ function dayTotals(occ, include = null) {
     const last = i === timed.length - 1;
     const there = o.travel || 0, back = last ? (o.back || 0) : 0;
     t.travel += there + back;
-    t.km += (o.km || 0) + (last ? (o.kmBack || 0) : 0);
+    const kmHere = (o.km || 0) + (last ? (o.kmBack || 0) : 0);
+    t.km += kmHere;
+    // Kilometergeld: nur zwischen Terminen desselben Arbeitgebers oder alle Fahrten
+    const between = i > 0 && timed[i - 1].employerId === o.employerId;
+    if ((emp.kmPay || 'between') === 'all') t.paidKm += kmHere;
+    else if (between) t.paidKm += o.km || 0;
     if (emp.travelPay === 'all') t.paidTravel += there + back;
     else if (emp.travelPay === 'between' && i > 0 && timed[i - 1].employerId === o.employerId) t.paidTravel += there;
   });
@@ -751,7 +889,8 @@ function renderDay() {
   for (const o of occ) {
     const emp = employerById(o.employerId);
     if (gaps.has(o)) list.append(el('div', { class: 'gap ' + gapLevel(gaps.get(o), o.travel) }, gapText(gaps.get(o), o.travel)));
-    if (o.travel && !isCredit(o) && !isPrivate(o)) list.append(el('div', { class: 'travel' }, `🚗 ${fmtDuration(o.travel)} Anfahrt` + (o.km ? ` · ${fmtKm(o.km)}` : '')));
+    if ((o.travel || o.km) && !isCredit(o) && !isPrivate(o)) list.append(el('div', { class: 'travel' },
+      `🚗 ${o.autoTravel ? '≈ ' : ''}${fmtDuration(o.travel || 0)} Anfahrt` + (o.km ? ` · ${o.autoKm ? '≈ ' : ''}${fmtKm(o.km)}` : '')));
     if (isCredit(o)) {
       list.append(el('button', {
         class: 'entry',
@@ -780,10 +919,12 @@ function renderDay() {
           : `${o.start} – ${o.end} Uhr · ${fmtDuration(netMin(o))}` + (o.pause ? ` (${o.pause} Min. Pause)` : '')),
         clientName(o) ? el('div', { class: 'client' }, '👤 ' + clientName(o)) : null,
         o.note ? el('div', { class: 'note' }, o.note) : null)));
-    if (o === lastWork && o.back) list.append(el('div', { class: 'travel' }, `🏠 ${fmtDuration(o.back)} Rückfahrt` + (o.kmBack ? ` · ${fmtKm(o.kmBack)}` : '')));
+    if (o === lastWork && (o.back || o.kmBack)) list.append(el('div', { class: 'travel' },
+      `🏠 ${o.autoBack ? '≈ ' : ''}${fmtDuration(o.back || 0)} Rückfahrt` + (o.kmBack ? ` · ${o.autoKmBack ? '≈ ' : ''}${fmtKm(o.kmBack)}` : '')));
   }
   const dayTravel = [...dayTotals(occ).values()].reduce((a, t) => a + t.travel, 0);
   if (dayTravel) list.append(el('p', { class: 'hint center' }, `Unterwegs heute: ${fmtDuration(workMinutes(occ) + dayTravel)} (davon ${fmtDuration(dayTravel)} Fahrt)`));
+  if (occ.some(o => o.autoTravel || o.autoKm)) list.append(el('p', { class: 'hint center' }, '≈ automatisch über die Adressen berechnet'));
 }
 
 const fmtKm = km => String(Math.round(km * 10) / 10).replace('.', ',') + ' km';
@@ -888,7 +1029,7 @@ function pickShiftEmployer(id) {
   $('travel-fields').hidden = priv;
   const emp = employerById(id);
   document.querySelectorAll('#travel-fields .km-field').forEach(n => { n.hidden = !(emp && emp.kmEnabled); });
-  if (!editing) suggestTravel(true);
+  if (!editing && !routingOn()) suggestTravel(true);
   $('shift-title').required = id === PRIVATE.id; // bei Kategorien reicht der Kategoriename
   $('shift-end').required = !priv;
   $('end-opt').hidden = !priv;
@@ -959,8 +1100,9 @@ function openShiftDialog(occurrence) {
   $('shift-client').value = clientName(o);
   endTouched = !!occurrence;
   writePause('shift-pause', o.pause);
-  writeNum('shift-travel', o.travel); writeNum('shift-km', o.km);
-  writeNum('shift-back', o.back); writeNum('shift-km-back', o.kmBack);
+  writeNum('shift-travel', o.autoTravel ? 0 : o.travel); writeNum('shift-km', o.autoKm ? 0 : o.km);
+  writeNum('shift-back', o.autoBack ? 0 : o.back); writeNum('shift-km-back', o.autoKmBack ? 0 : o.kmBack);
+  ['shift-travel', 'shift-km', 'shift-back', 'shift-km-back'].forEach(id => { $(id).placeholder = routingOn() ? 'automatisch' : ''; });
   travelTouched = !!occurrence;
   $('shift-title').value = o.title || '';
   $('absence-until').value = '';
@@ -984,7 +1126,7 @@ function applyClient() {
   if (c && c.duration && $('shift-start').value && !endTouched) {
     $('shift-end').value = minToTime(toMin($('shift-start').value) + c.duration);
   }
-  if (c) suggestTravel();
+  if (c && !routingOn()) suggestTravel();
   renderClientHint();
   updateShiftPreview();
 }
@@ -1205,7 +1347,8 @@ $('copy-form').addEventListener('submit', e => {
     if (exists) continue;
     const copy = {
       id: uid(), employerId: src.employerId, date, start: src.start, end: src.end || '', pause: src.pause || 0, note: src.note || '',
-      travel: src.travel || 0, back: src.back || 0, km: src.km || 0, kmBack: src.kmBack || 0,
+      travel: src.autoTravel ? 0 : src.travel || 0, back: src.autoBack ? 0 : src.back || 0,
+      km: src.autoKm ? 0 : src.km || 0, kmBack: src.autoKmBack ? 0 : src.kmBack || 0,
     };
     if (src.clientId) copy.clientId = src.clientId;
     if (isPrivate(src) && src.title) copy.title = src.title;
@@ -1267,6 +1410,8 @@ function openEmployerDialog(emp, asCategory = false) {
   $('limit-field').hidden = !$('employer-minijob').checked;
   $('employer-travelpay').value = emp && emp.travelPay || 'none';
   $('employer-km').checked = !!(emp && emp.kmEnabled);
+  $('employer-address').value = emp && emp.address || '';
+  $('employer-kmpay').value = emp && emp.kmPay || 'between';
   $('kmrate-field').hidden = !$('employer-km').checked;
   writeNum('employer-kmrate', emp && emp.kmRate);
   const acc = emp && emp.account;
@@ -1317,12 +1462,14 @@ $('employer-form').addEventListener('submit', e => {
   const data = {
     name, color: employerColor, rate: num('employer-rate'), limit, account, items,
     travelPay: $('employer-travelpay').value, kmEnabled, kmRate: kmEnabled ? (num('employer-kmrate') || null) : null,
+    kmPay: $('employer-kmpay').value, address: $('employer-address').value.trim(),
   };
   if (editingEmployer) Object.assign(editingEmployer, data);
   else state.employers.push({ id: uid(), ...data });
   save();
   $('employer-dialog').close();
   render();
+  geocodeMissing();
 });
 
 $('employer-delete').addEventListener('click', () => {
@@ -1471,7 +1618,7 @@ function renderStats() {
   // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
   const memo = new Map();
   const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
-  const per = new Map(workEmployers().map(e => [e.id, { min: 0, planned: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0 }]));
+  const per = new Map(workEmployers().map(e => [e.id, { min: 0, planned: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0, paidKm: 0 }]));
   for (let d = 1; d <= days; d++) {
     const list = occ(toISO(new Date(year, month, d)));
     for (const o of list) {
@@ -1484,7 +1631,7 @@ function renderStats() {
       const p = per.get(id);
       if (!p) continue;
       p.min += paidMinutes(t); // Arbeit + bezahlte Fahrzeit
-      p.travel += t.travel; p.paidTravel += t.paidTravel; p.km += t.km;
+      p.travel += t.travel; p.paidTravel += t.paidTravel; p.km += t.km; p.paidKm += t.paidKm;
     }
     for (const [id, t] of dayTotals(list, notDone)) if (per.has(id)) per.get(id).planned += paidMinutes(t);
   }
@@ -1506,7 +1653,7 @@ function renderStats() {
     totalPlanned += p.planned;
     if (e.rate) totalPlannedMoney += (p.planned / 60) * e.rate;
     totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
-    const kmMoney = e.kmEnabled && e.kmRate ? p.km * e.kmRate : 0;
+    const kmMoney = e.kmEnabled && e.kmRate ? p.paidKm * e.kmRate : 0;
     totalKmMoney += kmMoney;
     let money = null;
     if (e.rate) { anyRate = true; money = (p.min / 60) * e.rate; totalMoney += money; }
@@ -1516,7 +1663,7 @@ function renderStats() {
         el('div', {}, e.name),
         el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}` + (p.credit ? ` · davon ${fmtHours(p.credit)} Urlaub/Krank/Feiertag` : '')),
         p.travel ? el('small', { class: 'block' }, `🚗 ${fmtHours(p.travel)} Fahrzeit` + (p.paidTravel ? (p.paidTravel === p.travel ? ' (bezahlt, schon in den Stunden)' : ` (davon ${fmtHours(p.paidTravel)} bezahlt, schon in den Stunden)`) : ' (unbezahlt)')) : null,
-        e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
+        e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (p.paidKm < p.km ? ` (davon ${fmtKm(p.paidKm)} abrechenbar)` : '') + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
         p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
         el('div', { class: 'bar split' },
           el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
@@ -1642,6 +1789,7 @@ function renderSettings() {
   if (!categories().length) elc.append(el('p', { class: 'hint' }, 'Noch keine Kategorien.'));
 
   renderClientList();
+  renderRoutingSettings();
   renderBirthdayList();
   renderImportList();
 
@@ -1676,6 +1824,44 @@ $('region').addEventListener('change', e => {
   state.settings.region = e.target.value || null;
   save();
   toast(e.target.value ? 'Feiertage für ' + REGIONS[e.target.value] + ' aktiv' : 'Feiertage ausgeschaltet');
+});
+
+/* ---------- Einstellungen: Kilometer & Fahrzeit automatisch ---------- */
+
+function renderRoutingSettings() {
+  const r = state.settings.routing || {};
+  $('routing-on').checked = !!r.enabled;
+  $('routing-fields').hidden = !r.enabled;
+  if (document.activeElement !== $('routing-home')) $('routing-home').value = r.home || '';
+  const withAddr = (state.clients || []).filter(c => c.address);
+  const found = withAddr.filter(c => c.lat != null && c.geoFor === c.address).length;
+  const lines = [];
+  if (r.enabled) {
+    lines.push(r.home ? (r.lat != null && r.geoFor === r.home ? '🏠 Zuhause gefunden ✓' : '🏠 Zuhause wird gesucht …') : '🏠 Bitte deine Adresse eintragen');
+    lines.push(`👤 Kunden mit Adresse: ${found} von ${withAddr.length} gefunden`);
+    lines.push(`🛣️ Gespeicherte Strecken: ${Object.keys(state.routes || {}).length}`);
+    const notFound = [...(r.home && r.geoFor === r.home && r.lat == null ? ['deine Adresse'] : []),
+      ...[...withAddr, ...workEmployers().filter(e => e.address)].filter(x => x.geoFor === x.address && x.lat == null).map(x => x.name)];
+    if (notFound.length) lines.push('⚠️ Nicht gefunden: ' + notFound.join(', ') + ' – bitte Straße, Hausnummer und Ort angeben');
+    if (routingMsg) lines.push('⚠️ ' + routingMsg);
+  }
+  $('routing-status').replaceChildren(...lines.map(t => el('div', {}, t)));
+}
+
+$('routing-on').addEventListener('change', e => {
+  state.settings.routing = Object.assign({}, state.settings.routing, { enabled: e.target.checked });
+  routingMsg = '';
+  save(); renderRoutingSettings(); geocodeMissing();
+});
+$('routing-home').addEventListener('change', e => {
+  state.settings.routing = Object.assign({}, state.settings.routing, { home: e.target.value.trim() });
+  routingMsg = '';
+  save(); renderRoutingSettings(); geocodeMissing();
+});
+$('routing-retry').addEventListener('click', () => {
+  routeFailed.clear(); routingMsg = '';
+  for (const x of [state.settings.routing || {}, ...(state.clients || []), ...workEmployers()]) delete x.geoFor;
+  renderRoutingSettings(); geocodeMissing().then(render);
 });
 
 /* ---------- Kunden verwalten ---------- */
@@ -1772,6 +1958,7 @@ $('client-form').addEventListener('submit', e => {
   save();
   $('client-dialog').close();
   render();
+  geocodeMissing();
 });
 $('client-delete').addEventListener('click', () => {
   const c = editingClient;
@@ -2332,3 +2519,4 @@ if ('serviceWorker' in navigator && !NATIVE) {
 }
 
 render();
+setTimeout(geocodeMissing, 2000);

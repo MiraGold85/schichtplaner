@@ -16,6 +16,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Urlaub und Krankheit mit Stunden-Gutschrift (auch über mehrere Tage)
 - Kundenverwaltung: Name, Arbeitgeber, Adresse (Navigation), Telefon, übliche Dauer, bevorzugte Termine, Notizen; neue Namen beim Eintragen werden automatisch gespeichert
 - Private Kategorien mit eigener Farbe (z. B. „Pferde“), zählen nicht als Arbeitszeit
+- Kilometer und Fahrzeit automatisch aus den Adressen (OpenStreetMap: Photon/OSRM), Kilometergeld nur zwischen Terminen oder für alle Fahrten
 - Fahrzeiten und Kilometer pro Termin (halbautomatisch vorgeschlagen), pro Arbeitgeber einstellbar ob bezahlt; Kilometergeld
 - Abstände zwischen Terminen mit Warnung bei zu wenig Zeit oder Überschneidung
 - Mitnehmliste pro Arbeitgeber/Kategorie als tägliche Checkliste
