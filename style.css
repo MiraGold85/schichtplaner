@@ -348,3 +348,21 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .wsub { grid-column: 2; font-size: .8rem; color: var(--muted); overflow-wrap: anywhere; }
 .wwarn.tight { color: #b45309; font-size: .8rem; font-weight: 600; }
 .wwarn.overlap { color: var(--danger); font-size: .8rem; font-weight: 700; }
+
+/* Kann ich? */
+.top-actions { display: flex; gap: 6px; }
+.top-actions .btn { padding: 0 10px; }
+.check-result { background: var(--bg); border-radius: 12px; padding: 12px; margin: 8px 0; }
+.check-result:empty { display: none; }
+.check-head { font-weight: 700; font-size: 1.1rem; margin-bottom: 6px; }
+.check-head.ok { color: #16a34a; }
+.check-head.tight { color: #b45309; }
+.check-head.no { color: var(--danger); }
+.check-line { font-size: .9rem; margin: 3px 0; }
+.check-sub { font-size: .85rem; color: var(--muted); margin-top: 10px; }
+.check-result .chips { margin: 6px 0 0; }
+.week-free { margin-top: 10px; border-top: 1px solid var(--line); }
+.wf-row { display: flex; gap: 10px; width: 100%; border: 0; background: none; text-align: left; padding: 8px 0; border-bottom: 1px solid var(--line); font-size: .9rem; }
+.wf-row.current { font-weight: 700; }
+.wf-day { flex: 0 0 82px; }
+.wf-times { flex: 1; color: var(--muted); }

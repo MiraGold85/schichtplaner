@@ -730,6 +730,7 @@ function showView(name, fromNav = false) {
   $('title').textContent = { calendar: 'Schichtplaner', stats: 'Stunden', settings: 'Einstellungen' }[name];
   $('fab').hidden = name !== 'calendar' || selectMode;
   $('select-toggle').hidden = name !== 'calendar';
+  $('check-open').hidden = name !== 'calendar';
   render();
 }
 
@@ -952,6 +953,152 @@ window.addEventListener('popstate', e => {
   calModeNow = st.calMode && st.calMode !== (state.settings.calMode || 'month') ? st.calMode : null;
   if (st.date) setSelected(st.date);
   showView(st.view || 'calendar', true);
+});
+
+/* ---------- „Kann ich?“-Prüfung und freie Zeitfenster ---------- */
+
+const DAY_START = 7 * 60, DAY_END = 20 * 60; // betrachteter Tag: 7–20 Uhr
+
+// Belegte Zeiten eines Tages: jeder Termin mit Uhrzeit inkl. Anfahrt davor
+function busyIntervals(date) {
+  return occurrencesOn(date).filter(o => !isCredit(o) && o.start).map(o => {
+    const s = toMin(o.start);
+    let e = o.end ? toMin(o.end) : s + 60;
+    if (e <= s) e = 24 * 60; // über Mitternacht
+    return { from: s - (o.travel || 0), start: s, end: e, o };
+  }).sort((a, b) => a.from - b.from);
+}
+
+function freeWindows(date, minLen = 30) {
+  const busy = busyIntervals(date);
+  const out = [];
+  let cur = DAY_START;
+  for (const b of busy) {
+    if (b.from - cur >= minLen) out.push([cur, b.from]);
+    cur = Math.max(cur, b.end);
+  }
+  if (DAY_END - cur >= minLen) out.push([cur, DAY_END]);
+  return out;
+}
+
+const fmtWindow = ([a, b]) => a <= DAY_START && b >= DAY_END ? 'ganzer Tag frei' : b >= DAY_END ? `ab ${minToTime(a)}` : `${minToTime(a)}–${minToTime(b)}`;
+const busyLabel = b => `${occLabel(b.o)} ${b.o.start}${b.o.end ? '–' + b.o.end : ''}`;
+
+// Fahrzeit zum geprüften Termin (nur wenn automatisch berechenbar)
+function travelTo(date, start, employerId, clientId) {
+  if (!routingOn()) return 0;
+  const target = occLoc({ employerId, clientId });
+  if (!target) return 0;
+  const prev = busyIntervals(date).filter(b => b.end <= start && !isPrivate(b.o)).pop();
+  const from = prev ? occLoc(prev.o) : homeLoc();
+  const leg = routeBetween(from, target);
+  return leg ? leg.min : 0;
+}
+
+function checkSlot(date, start, end, employerId, clientId) {
+  const travel = employerId ? travelTo(date, start, employerId, clientId) : 0;
+  const from = start - travel;
+  const busy = busyIntervals(date);
+  const conflicts = busy.filter(b => b.from < end && from < b.end);
+  const before = busy.filter(b => b.end <= from).pop();
+  const after = busy.find(b => b.from >= end);
+  const gapBefore = before ? from - before.end : null;
+  const gapAfter = after ? after.from - end : null;
+  let level = 'ok';
+  if (conflicts.length) level = 'no';
+  else if ((gapBefore != null && gapBefore < minGap()) || (gapAfter != null && gapAfter < minGap())) level = 'tight';
+  return { level, conflicts, before, after, gapBefore, gapAfter, travel };
+}
+
+let checkEmployerId = null;
+
+function openCheckDialog() {
+  $('check-date').value = view.selected;
+  if (!$('check-start').value) { $('check-start').value = '09:00'; $('check-end').value = '12:00'; }
+  checkEmployerId = null;
+  $('check-client').value = '';
+  $('check-week').checked = false;
+  renderCheckChips();
+  renderCheck();
+  $('check-dialog').showModal();
+}
+
+function renderCheckChips() {
+  $('check-employers').replaceChildren(
+    el('button', { type: 'button', class: 'chip' + (!checkEmployerId ? ' active' : ''), onclick: () => { checkEmployerId = null; renderCheckChips(); renderCheck(); } }, 'egal'),
+    ...workEmployers().map(e => el('button', {
+      type: 'button', class: 'chip' + (e.id === checkEmployerId ? ' active' : ''), style: `--c:${e.color}`,
+      onclick: () => { checkEmployerId = e.id; renderCheckChips(); renderCheck(); },
+    }, el('i', { class: 'dot', style: `background:${e.color}` }), e.name)));
+  $('check-client-field').hidden = !checkEmployerId;
+  $('check-client-list').replaceChildren(...clients().filter(c => !checkEmployerId || c.employerId === checkEmployerId || !c.employerId).map(c => el('option', { value: c.name })));
+}
+
+function renderCheck() {
+  const date = $('check-date').value, s = $('check-start').value, e = $('check-end').value;
+  const box = $('check-result');
+  if (!date || !s || !e) { box.replaceChildren(); return; }
+  const start = toMin(s), end = toMin(e) > start ? toMin(e) : start + 60;
+  const client = checkEmployerId ? clientByName($('check-client').value, checkEmployerId) : null;
+  const r = checkSlot(date, start, end, checkEmployerId, client && client.id);
+  const lines = [];
+  const head = { ok: '✅ Ja, das passt.', tight: '⚠️ Geht, wird aber knapp.', no: '❌ Nein, das geht nicht.' }[r.level];
+  if (r.level === 'no') lines.push('Überschneidet sich mit: ' + r.conflicts.map(busyLabel).join(', ') + (r.travel ? ` (inkl. ${fmtDuration(r.travel)} Anfahrt)` : ''));
+  if (r.level !== 'no') {
+    lines.push(r.before ? `Davor: ${busyLabel(r.before)} – ${fmtDuration(Math.max(0, r.gapBefore))} Luft` + (r.travel ? ` (nach ${fmtDuration(r.travel)} Anfahrt)` : '') : 'Davor: nichts');
+    lines.push(r.after ? `Danach: ${busyLabel(r.after)} – ${fmtDuration(Math.max(0, r.gapAfter))} Luft` : 'Danach: nichts');
+  }
+  const holiday = holidayName(date);
+  if (holiday) lines.push(`🎉 ${holiday}`);
+  for (const c of occurrencesOn(date).filter(o => o.kind === 'absence')) lines.push(`${ABSENCE_LABEL[c.absence]} bei ${employerById(c.employerId).name}`);
+  // Minijob-Grenze: würde der Termin sie überschreiten?
+  const emp = employerById(checkEmployerId);
+  if (emp && emp.limit && emp.rate) {
+    const d = fromISO(date), y = d.getFullYear(), m = d.getMonth();
+    let min = 0;
+    for (let i = 1; i <= new Date(y, m + 1, 0).getDate(); i++) {
+      min += paidMinutes(dayTotals(occurrencesOn(toISO(new Date(y, m, i)))).get(emp.id));
+    }
+    const after = (min + end - start) / 60 * emp.rate;
+    if (after > emp.limit) lines.push(`💶 Achtung: Damit wärst du bei ${fmtMoney(after)} von ${fmtMoney(emp.limit)} (Minijob-Grenze)`);
+    else lines.push(`💶 Minijob: danach ${fmtMoney(after)} von ${fmtMoney(emp.limit)}`);
+  }
+  const free = freeWindows(date);
+  box.replaceChildren(
+    el('div', { class: 'check-head ' + r.level }, head),
+    ...lines.map(t => el('div', { class: 'check-line' }, t)),
+    el('div', { class: 'check-sub' }, `Freie Zeiten am ${fromISO(date).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' })}:`),
+    free.length ? el('div', { class: 'chips small' }, ...free.map(w => el('button', {
+      type: 'button', class: 'chip', onclick: () => {
+        const len = Math.min(end - start, w[1] - w[0]);
+        $('check-start').value = minToTime(w[0]); $('check-end').value = minToTime(w[0] + len); renderCheck();
+      },
+    }, fmtWindow(w)))) : el('div', { class: 'check-line' }, 'An diesem Tag ist zwischen 7 und 20 Uhr nichts mehr frei.'),
+    $('check-week').checked ? renderWeekFree(date) : '',
+  );
+  $('check-add').hidden = r.level === 'no';
+}
+
+function renderWeekFree(date) {
+  const ws = weekStartOf(date);
+  return el('div', { class: 'week-free' }, ...Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(ws, i);
+    const free = freeWindows(d, 60);
+    const label = fromISO(d).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' });
+    return el('button', { type: 'button', class: 'wf-row' + (d === date ? ' current' : ''), onclick: () => { $('check-date').value = d; renderCheck(); } },
+      el('span', { class: 'wf-day' }, label + (holidayName(d) ? ' 🎉' : '')),
+      el('span', { class: 'wf-times' }, free.length ? free.map(fmtWindow).join(' · ') : 'voll'));
+  }));
+}
+
+$('check-open').addEventListener('click', openCheckDialog);
+['check-date', 'check-start', 'check-end', 'check-client', 'check-week'].forEach(id => $(id).addEventListener('input', renderCheck));
+$('check-week').addEventListener('change', renderCheck);
+$('check-close').addEventListener('click', () => $('check-dialog').close());
+$('check-add').addEventListener('click', () => {
+  const prefill = { date: $('check-date').value, start: $('check-start').value, end: $('check-end').value, employerId: checkEmployerId, client: checkEmployerId ? $('check-client').value.trim() : '' };
+  $('check-dialog').close();
+  openShiftDialog(null, prefill);
 });
 
 /* ---------- Mehrere Tage auswählen und Termine löschen ---------- */
@@ -1260,7 +1407,7 @@ function updateShiftPreview() {
   }
 }
 
-function openShiftDialog(occurrence) {
+function openShiftDialog(occurrence, prefill = null) {
   editing = occurrence || null;
   const o = occurrence || {};
   $('shift-date').value = o.date || view.selected;
@@ -1284,7 +1431,14 @@ function openShiftDialog(occurrence) {
   const lastWork = state.shifts.filter(s => !isPrivate(s) && !s.absence).pop();
   const fallback = lastWork && employerById(lastWork.employerId) ? lastWork.employerId
     : (workEmployers()[0] || categories()[0] || PRIVATE).id;
-  pickShiftEmployer(o.employerId || fallback);
+  pickShiftEmployer(o.employerId || (prefill && prefill.employerId) || fallback);
+  if (prefill) {
+    $('shift-date').value = prefill.date;
+    $('shift-start').value = prefill.start;
+    $('shift-end').value = prefill.end;
+    $('shift-client').value = prefill.client || '';
+    endTouched = true;
+  }
   renderClientHint();
   $('shift-dialog').showModal();
 }
@@ -2676,7 +2830,7 @@ $('view-calendar').addEventListener('touchend', e => {
 });
 history.replaceState({ view: 'calendar', calMode: calMode(), date: view.selected }, '');
 
-['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog'].forEach(id => closeOnBackdrop($(id)));
+['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog', 'check-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator && !NATIVE) {

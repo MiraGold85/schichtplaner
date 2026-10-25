@@ -19,6 +19,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Private Kategorien mit eigener Farbe (z. B. „Pferde“), zählen nicht als Arbeitszeit
 - Kilometer und Fahrzeit automatisch aus den Adressen (OpenStreetMap: Photon/OSRM), Kilometergeld nur zwischen Terminen oder für alle Fahrten
 - Fahrzeiten und Kilometer pro Termin (halbautomatisch vorgeschlagen), pro Arbeitgeber einstellbar ob bezahlt; Kilometergeld
+- „Frei?“-Prüfung: Passt ein Termin (ja / knapp / Überschneidung, inkl. Fahrzeit und Minijob-Grenze)? Freie Zeitfenster des Tages und der Woche
 - Abstände zwischen Terminen mit Warnung bei zu wenig Zeit oder Überschneidung
 - Mitnehmliste pro Arbeitgeber/Kategorie als tägliche Checkliste
 - Geburtstage (jährlich, optional mit Alter)

@@ -14,7 +14,10 @@
 <body>
   <header class="topbar">
     <h1 id="title">Schichtplaner</h1>
-    <button class="btn small secondary" id="select-toggle">Auswählen</button>
+    <div class="top-actions">
+      <button class="btn small secondary" id="check-open">🔍 Frei?</button>
+      <button class="btn small secondary" id="select-toggle">Auswählen</button>
+    </div>
   </header>
 
   <main>
@@ -389,6 +392,31 @@
         <button type="submit" class="btn">Speichern</button>
       </div>
       <a class="gcal" id="plan-gcal" target="_blank" rel="noopener" hidden>Als Serie in Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Kann ich? -->
+  <dialog id="check-dialog" class="sheet">
+    <form method="dialog" id="check-form" onsubmit="return false">
+      <h2>🔍 Kann ich da?</h2>
+      <label class="field">Tag <input type="date" id="check-date"></label>
+      <div class="row">
+        <label class="field">Von <input type="time" id="check-start"></label>
+        <label class="field">Bis <input type="time" id="check-end"></label>
+      </div>
+      <div class="field">Für <span class="opt">(optional – dann wird auch die Fahrzeit berücksichtigt)</span>
+        <div class="chips small" id="check-employers"></div>
+      </div>
+      <label class="field" id="check-client-field" hidden>Kunde <span class="opt">(optional)</span>
+        <input type="text" id="check-client" list="check-client-list" autocomplete="off">
+        <datalist id="check-client-list"></datalist>
+      </label>
+      <div class="check-result" id="check-result"></div>
+      <label class="check"><input type="checkbox" id="check-week"> Freie Zeiten der ganzen Woche zeigen</label>
+      <div class="row actions">
+        <button type="button" class="btn secondary" id="check-close">Schließen</button>
+        <button type="button" class="btn" id="check-add">So eintragen</button>
+      </div>
     </form>
   </dialog>
 
