@@ -716,12 +716,18 @@ let currentView = 'calendar';
 const view = { year: new Date().getFullYear(), month: new Date().getMonth(), selected: todayISO() };
 const statsMonth = { year: view.year, month: view.month };
 
-function showView(name) {
+function showView(name, fromNav = false) {
+  if (selectMode && name !== 'calendar') setSelectMode(false); // vor dem neuen Verlaufseintrag beenden
+  if (!fromNav && name !== currentView) {
+    // Kalender ist die Startseite; Stunden/Einstellungen liegen eine Ebene darüber
+    if (currentView === 'calendar') navPush({ view: name });
+    else if (name === 'calendar') { history.back(); return; }
+    else { currentView = name; history.replaceState(Object.assign({}, history.state, { view: name }), ''); }
+  }
   currentView = name;
   document.querySelectorAll('.view').forEach(v => v.classList.toggle('active', v.id === 'view-' + name));
   document.querySelectorAll('.tabbar button').forEach(b => b.classList.toggle('active', b.dataset.view === name));
   $('title').textContent = { calendar: 'Schichtplaner', stats: 'Stunden', settings: 'Einstellungen' }[name];
-  if (selectMode && name !== 'calendar') setSelectMode(false);
   $('fab').hidden = name !== 'calendar' || selectMode;
   $('select-toggle').hidden = name !== 'calendar';
   render();
@@ -735,7 +741,48 @@ function render() {
 
 /* ---------- Kalender ---------- */
 
+/* ---------- Kalender-Ansichten: Tag / Woche / Monat ---------- */
+
+let calModeNow = null; // aktuelle Ansicht (kann durch Antippen eines Tages kurz von der gespeicherten abweichen)
+const calMode = () => calModeNow || state.settings.calMode || 'month';
+const weekStartOf = iso => addDays(iso, 1 - isoWeekday(iso));
+function isoWeekNumber(iso) {
+  const d = fromISO(iso);
+  d.setDate(d.getDate() + 4 - (d.getDay() || 7)); // Donnerstag derselben Woche
+  const yearStart = new Date(d.getFullYear(), 0, 1);
+  return Math.ceil(((d - yearStart) / 86400000 + 1) / 7);
+}
+const fmtDM = iso => fromISO(iso).toLocaleDateString('de-DE', { day: 'numeric', month: 'numeric' });
+
+function setSelected(iso) {
+  view.selected = iso;
+  const d = fromISO(iso); view.year = d.getFullYear(); view.month = d.getMonth();
+}
+
 function renderCalendar() {
+  const mode = selectMode ? 'month' : calMode();
+  $('cal-mode').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  $('cal-mode').hidden = selectMode;
+  $('month-wrap').hidden = mode !== 'month';
+  $('week-view').hidden = mode !== 'week';
+  $('day-title').hidden = mode === 'day';
+  if (mode === 'week') {
+    const ws = weekStartOf(view.selected);
+    $('month-label').textContent = `KW ${isoWeekNumber(ws)} · ${fmtDM(ws)} – ${fmtDM(addDays(ws, 6))}`;
+    renderWeek(ws);
+    $('day-panel').hidden = true;
+    return;
+  }
+  if (mode === 'day') {
+    $('month-label').textContent = fmtDayTitle(view.selected) + (view.selected === todayISO() ? ' (heute)' : '');
+    $('day-panel').hidden = false;
+    renderDay();
+    return;
+  }
+  renderMonth();
+}
+
+function renderMonth() {
   $('month-label').textContent = monthName(view.year, view.month);
   const grid = $('grid');
   grid.replaceChildren();
@@ -787,6 +834,126 @@ function renderCalendar() {
   $('day-panel').hidden = selectMode;
 }
 
+// Kurzzeile für einen Termin in der Wochenansicht
+function weekEntry(o, gap) {
+  const emp = employerById(o.employerId);
+  if (isCredit(o)) {
+    return el('button', { class: 'wentry credit', onclick: () => o.kind === 'holiday' ? null : openShiftDialog(o) },
+      el('span', { class: 'stripe credit', style: `background:${emp.color}` }),
+      el('span', { class: 'wbody' },
+        el('span', { class: 'wtime' }, o.kind === 'holiday' ? '🎉' : (o.absence === 'urlaub' ? '🌴' : '🤒')),
+        el('span', { class: 'wtitle' }, `${emp.name}: ${o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence]} · ${fmtHours(o.credit)}`)));
+  }
+  const priv = isPrivate(o);
+  const title = priv ? (o.title || emp.name) : emp.name + (clientName(o) ? ' · ' + clientName(o) : '');
+  const sub = [
+    o.travel ? `🚗 ${o.autoTravel ? '≈' : ''}${fmtDuration(o.travel)}` + (o.km ? ` · ${o.autoKm ? '≈' : ''}${fmtKm(o.km)}` : '') : '',
+    o.note || '',
+  ].filter(Boolean).join(' · ');
+  const level = gap != null ? gapLevel(gap, o.travel) : 'ok';
+  return el('button', { class: 'wentry' + (!priv && isDone(o) ? ' done' : ''), onclick: () => openShiftDialog(o) },
+    el('span', { class: 'stripe', style: `background:${emp.color}` }),
+    el('span', { class: 'wbody' },
+      el('span', { class: 'wtime' }, o.end ? `${o.start}–${o.end}` : o.start),
+      el('span', { class: 'wtitle' }, title,
+        level !== 'ok' ? el('span', { class: 'wwarn ' + level }, level === 'overlap' ? ' ⚠️ Überschneidung' : ' ⚠️ knapp') : null),
+      sub ? el('span', { class: 'wsub' }, sub) : null));
+}
+
+function renderWeek(ws) {
+  const box = $('week-view');
+  const today = todayISO();
+  box.replaceChildren(...Array.from({ length: 7 }, (_, i) => {
+    const d = addDays(ws, i);
+    const occ = occurrencesOn(d);
+    const gaps = dayGaps(occ);
+    const holiday = holidayName(d);
+    const total = workMinutes(occ);
+    const infos = [
+      holiday ? `🎉 ${holiday}` : '',
+      ...birthdaysOn(d).map(b => `🎂 ${b.name}`),
+      ...importsOn(d).map(ev => `${eventIcon(ev.title)} ${ev.title}`),
+    ].filter(Boolean);
+    return el('div', { class: 'wday' + (d === today ? ' today' : '') + (d === view.selected ? ' selected' : '') },
+      el('button', { class: 'whead' + (holiday ? ' holiday' : ''), onclick: () => openDayView(d) },
+        el('span', { class: 'wname' }, fromISO(d).toLocaleDateString('de-DE', { weekday: 'short', day: 'numeric', month: 'numeric' }) + (d === today ? ' · heute' : '')),
+        el('span', { class: 'wsum' }, total ? fmtDuration(total) : ''), el('span', { class: 'chev' }, '›')),
+      infos.length ? el('div', { class: 'winfo' }, infos.join(' · ')) : null,
+      ...(occ.length ? occ.map(o => weekEntry(o, gaps.get(o))) : [el('div', { class: 'wfree' }, 'frei')]));
+  }));
+}
+
+// Tag aus der Wochen-/Monatsansicht öffnen – „Zurück“ führt wieder dorthin
+function openDayView(iso) {
+  navPush({ calMode: 'day', date: iso });
+  calModeNow = 'day';
+  setSelected(iso);
+  renderCalendar();
+  window.scrollTo(0, 0);
+}
+
+// Pfeile/Wischen: je nach Ansicht Monat, Woche oder Tag weiter
+function stepCalendar(dir) {
+  const mode = selectMode ? 'month' : calMode();
+  if (mode === 'month') shiftMonth(view, dir);
+  else setSelected(addDays(view.selected, mode === 'week' ? 7 * dir : dir));
+  renderCalendar();
+}
+
+/* ---------- Zurück-Taste (Android) und Verlauf ---------- */
+// Jeder Dialog, jeder Wechsel zu Stunden/Einstellungen und jede geöffnete Tagesansicht bekommt einen Eintrag im
+// Browser-Verlauf. Die Zurück-Taste geht damit Schritt für Schritt zurück; erst ganz am Anfang schließt die App.
+let navBackPending = false, navDeferred = [];
+function navPush(extra) {
+  const here = { view: currentView, calMode: calMode(), date: view.selected };
+  const entry = Object.assign({}, here, extra);
+  if (navBackPending) { navDeferred.push(entry); return; }
+  // aktuellen Stand merken, damit „Zurück“ genau hierher führt (z. B. Wochenansicht)
+  if (!history.state || !history.state.dialog) history.replaceState(Object.assign({}, history.state, here), '');
+  history.pushState(entry, '');
+}
+function navSnapshot() { return { view: currentView, calMode: calModeNow, date: view.selected }; }
+
+const origShowModal = HTMLDialogElement.prototype.showModal;
+HTMLDialogElement.prototype.showModal = function () {
+  origShowModal.call(this);
+  navPush({ dialog: this.id });
+};
+// Normal geschlossen (Speichern/Abbrechen): den Verlaufseintrag des Dialogs sofort wieder entfernen –
+// sofort, damit ein direkt danach geöffneter Dialog (z. B. Kopieren) sauber eingetragen wird.
+function navDialogClosed(d) {
+  if (d.dataset.navClosing) { delete d.dataset.navClosing; return; }
+  if (history.state && history.state.dialog === d.id) { navBackPending = true; history.back(); }
+}
+const origClose = HTMLDialogElement.prototype.close;
+HTMLDialogElement.prototype.close = function (value) {
+  if (this.open) { navDialogClosed(this); this.dataset.navHandled = '1'; }
+  origClose.call(this, value);
+};
+// Schließen ohne close()-Aufruf (z. B. Esc-Taste): über das Ereignis nachholen
+document.querySelectorAll('dialog').forEach(d => d.addEventListener('close', () => {
+  if (d.dataset.navHandled) { delete d.dataset.navHandled; return; }
+  navDialogClosed(d);
+}));
+
+window.addEventListener('popstate', e => {
+  if (navBackPending) {
+    navBackPending = false;
+    for (const entry of navDeferred.splice(0)) history.pushState(entry, '');
+    return;
+  }
+  const open = [...document.querySelectorAll('dialog[open]')];
+  if (open.length) {
+    for (const d of open) { d.dataset.navClosing = '1'; d.close(); delete d.dataset.navClosing; }
+    return;
+  }
+  if (selectMode) { setSelectMode(false); return; }
+  const st = e.state || {};
+  calModeNow = st.calMode && st.calMode !== (state.settings.calMode || 'month') ? st.calMode : null;
+  if (st.date) setSelected(st.date);
+  showView(st.view || 'calendar', true);
+});
+
 /* ---------- Mehrere Tage auswählen und Termine löschen ---------- */
 
 let selectMode = false;
@@ -794,6 +961,8 @@ let selectedDays = new Set();
 let selectExcluded = new Set(); // Arbeitgeber/Kategorien, die beim Löschen ausgenommen sind
 
 function setSelectMode(on) {
+  if (on && !selectMode) navPush({ selecting: true });
+  else if (!on && selectMode && history.state && history.state.selecting) { selectMode = false; navBackPending = true; history.back(); }
   selectMode = on;
   selectedDays = new Set();
   selectExcluded = new Set();
@@ -860,6 +1029,7 @@ function renderDay() {
   $('day-title').textContent = date === todayISO() ? 'Heute, ' + fmtDayTitle(date).split(', ')[1] : fmtDayTitle(date);
   const total = workMinutes(occ);
   $('day-sum').textContent = total ? fmtDuration(total) : '';
+  $('open-day').hidden = calMode() === 'day';
 
   const list = $('day-list');
   list.replaceChildren();
@@ -2475,28 +2645,36 @@ $('restore-file').addEventListener('change', async e => {
 
 document.querySelectorAll('.tabbar button').forEach(b => b.addEventListener('click', () => showView(b.dataset.view)));
 $('fab').addEventListener('click', () => openShiftDialog());
+$('open-day').addEventListener('click', () => openDayView(view.selected));
 
 function shiftMonth(target, delta) {
   const d = new Date(target.year, target.month + delta, 1);
   target.year = d.getFullYear(); target.month = d.getMonth();
 }
-$('prev-month').addEventListener('click', () => { shiftMonth(view, -1); renderCalendar(); });
-$('next-month').addEventListener('click', () => { shiftMonth(view, 1); renderCalendar(); });
-$('month-label').addEventListener('click', () => {
-  const n = new Date(); view.year = n.getFullYear(); view.month = n.getMonth(); view.selected = todayISO(); renderCalendar();
+$('prev-month').addEventListener('click', () => stepCalendar(-1));
+$('next-month').addEventListener('click', () => stepCalendar(1));
+$('month-label').addEventListener('click', () => { setSelected(todayISO()); renderCalendar(); });
+$('cal-mode').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mode]');
+  if (!b) return;
+  state.settings.calMode = b.dataset.mode;
+  calModeNow = null;
+  save();
+  renderCalendar();
 });
 $('stats-prev').addEventListener('click', () => { shiftMonth(statsMonth, -1); renderStats(); });
 $('stats-next').addEventListener('click', () => { shiftMonth(statsMonth, 1); renderStats(); });
 
-// Wischen im Kalender wechselt den Monat
-let touchX = null;
-$('grid').addEventListener('touchstart', e => { touchX = e.touches[0].clientX; }, { passive: true });
-$('grid').addEventListener('touchend', e => {
+// Wischen im Kalender: je nach Ansicht Monat, Woche oder Tag weiter
+let touchX = null, touchY = null;
+$('view-calendar').addEventListener('touchstart', e => { touchX = e.touches[0].clientX; touchY = e.touches[0].clientY; }, { passive: true });
+$('view-calendar').addEventListener('touchend', e => {
   if (touchX == null) return;
-  const dx = e.changedTouches[0].clientX - touchX;
+  const dx = e.changedTouches[0].clientX - touchX, dy = e.changedTouches[0].clientY - touchY;
   touchX = null;
-  if (Math.abs(dx) > 60) { shiftMonth(view, dx < 0 ? 1 : -1); renderCalendar(); }
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) stepCalendar(dx < 0 ? 1 : -1);
 });
+history.replaceState({ view: 'calendar', calMode: calMode(), date: view.selected }, '');
 
 ['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog'].forEach(id => closeOnBackdrop($(id)));
 
