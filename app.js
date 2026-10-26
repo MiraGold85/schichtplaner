@@ -126,7 +126,10 @@ function setupPauseChips(chipsId, inputId, onChange) {
 }
 const isCredit = o => o.kind === 'absence' || o.kind === 'holiday';
 const workMinutes = list => list.filter(o => !isPrivate(o)).reduce((s, o) => s + occMinutes(o), 0);
-const ABSENCE_LABEL = { urlaub: 'Urlaub', krank: 'Krank' };
+const ABSENCE_LABEL = { urlaub: 'Urlaub', krank: 'Krank', abbau: 'Ü-Abbau' };
+const ABSENCE_ICON = { urlaub: '🌴', krank: '🤒', abbau: '⏳' };
+// Text zur Gutschrift: beim Überstundenabbau gibt es keine – die Stunden gehen vom Konto ab
+const creditText = o => o.absence === 'abbau' ? 'frei – geht vom Stundenkonto ab' : `${fmtHours(o.credit)} gutgeschrieben`;
 
 /* ---------- Feiertage ---------- */
 
@@ -622,6 +625,10 @@ const daysInMonthOf = iso => new Date(Number(iso.slice(0, 4)), Number(iso.slice(
 // Soll pro Tag gleichmäßig verteilt: Wochen-Soll / 7 bzw. Monats-Soll / Tage im Monat
 const dailySollMin = (acc, iso) => acc.unit === 'week' ? acc.amount * 60 / 7 : acc.amount * 60 / daysInMonthOf(iso);
 
+// Wirkung auf das Konto: Auszahlung zieht ab, Korrektur mit Vorzeichen
+const adjEffect = a => a.type === 'payout' ? -a.min : a.min;
+const adjustmentsIn = (emp, from, to) => ((emp.account && emp.account.adjustments) || []).filter(a => a.date >= from && a.date <= to);
+
 function accountRange(emp, from, to, occ = occurrencesOn) {
   let soll = 0, ist = 0;
   if (from < emp.account.start) from = emp.account.start;
@@ -629,13 +636,14 @@ function accountRange(emp, from, to, occ = occurrencesOn) {
     soll += dailySollMin(emp.account, d);
     ist += paidMinutes(dayTotals(occ(d)).get(emp.id));
   }
-  return { soll, ist };
+  const adj = adjustmentsIn(emp, from, to).reduce((sum, a) => sum + adjEffect(a), 0);
+  return { soll, ist, adj };
 }
 
 function accountBalance(emp, to, occ) {
   if (to < emp.account.start) return null;
   const r = accountRange(emp, emp.account.start, to, occ);
-  return (emp.account.opening || 0) * 60 + r.ist - r.soll;
+  return (emp.account.opening || 0) * 60 + r.ist + r.adj - r.soll;
 }
 
 // "Keine Minusstunden": bezahlt wird, was gearbeitet wurde (z. B. Minijob) – nur Plus wird übertragen.
@@ -648,7 +656,7 @@ function plusCarry(emp, year, month, occ) {
   const s = fromISO(emp.account.start);
   for (let y = s.getFullYear(), m = s.getMonth(); y < year || (y === year && m < month); m === 11 ? (y++, m = 0) : m++) {
     const r = accountRange(emp, toISO(new Date(y, m, 1)), toISO(new Date(y, m + 1, 0)), occ);
-    carry = Math.max(0, carry + r.ist - r.soll);
+    carry = Math.max(0, carry + r.ist + r.adj - r.soll);
   }
   return carry;
 }
@@ -842,8 +850,8 @@ function weekEntry(o, gap) {
     return el('button', { class: 'wentry credit', onclick: () => o.kind === 'holiday' ? null : openShiftDialog(o) },
       el('span', { class: 'stripe credit', style: `background:${emp.color}` }),
       el('span', { class: 'wbody' },
-        el('span', { class: 'wtime' }, o.kind === 'holiday' ? '🎉' : (o.absence === 'urlaub' ? '🌴' : '🤒')),
-        el('span', { class: 'wtitle' }, `${emp.name}: ${o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence]} · ${fmtHours(o.credit)}`)));
+        el('span', { class: 'wtime' }, o.kind === 'holiday' ? '🎉' : ABSENCE_ICON[o.absence]),
+        el('span', { class: 'wtitle' }, `${emp.name}: ${o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence]} · ` + (o.absence === 'abbau' ? 'frei' : fmtHours(o.credit)))));
   }
   const priv = isPrivate(o);
   const title = priv ? (o.title || emp.name) : emp.name + (clientName(o) ? ' · ' + clientName(o) : '');
@@ -1219,7 +1227,7 @@ function renderDay() {
         el('span', { class: 'body' },
           el('span', { class: 'who' }, emp.name,
             el('span', { class: 'badge' }, o.kind === 'holiday' ? 'Feiertag' : ABSENCE_LABEL[o.absence])),
-          el('div', { class: 'when' }, (o.kind === 'holiday' ? `${o.start} – ${o.end} Uhr entfällt · ` : '') + `${fmtHours(o.credit)} gutgeschrieben`),
+          el('div', { class: 'when' }, (o.kind === 'holiday' ? `${o.start} – ${o.end} Uhr entfällt · ` : '') + creditText(o)),
           o.note ? el('div', { class: 'note' }, o.note) : null)));
       continue;
     }
@@ -1291,6 +1299,8 @@ function setShiftType(type) {
   $('shift-start').required = !absence;
   $('shift-end').required = !absence && !priv;
   $('absence-until-field').hidden = !!editing;
+  $('absence-credit-field').hidden = shiftType === 'abbau';
+  $('abbau-hint').hidden = shiftType !== 'abbau';
   if (absence && (!editing || editing.kind !== 'absence')) {
     const c = defaultCredit(shiftEmployerId, $('shift-date').value);
     $('absence-credit').value = c != null ? hoursText(c) : '';
@@ -1485,8 +1495,8 @@ function skipPlanDate(planId, date) {
 }
 
 function saveAbsence() {
-  const credit = parseHours($('absence-credit').value);
-  if (credit == null || credit === 0) { toast('Bitte eintragen, wie viele Stunden pro Tag gutgeschrieben werden'); return false; }
+  const credit = shiftType === 'abbau' ? 0 : parseHours($('absence-credit').value);
+  if (shiftType !== 'abbau' && (credit == null || credit === 0)) { toast('Bitte eintragen, wie viele Stunden pro Tag gutgeschrieben werden'); return false; }
   const base = { employerId: shiftEmployerId, absence: shiftType, credit, note: $('shift-note').value.trim() };
   const date = $('shift-date').value;
   if (!date) return false;
@@ -1967,6 +1977,10 @@ function renderStats() {
     return;
   }
 
+  const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
+  for (const e of workEmployers()) {
+    per.get(e.id).payout = e.account ? adjustmentsIn(e, mStart, mEnd).filter(a => a.type === 'payout').reduce((x, a) => x + a.min, 0) : 0;
+  }
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
   let totalMin = 0, totalMoney = 0, anyRate = false, totalTravel = 0, totalUnpaidTravel = 0, totalKmMoney = 0, totalPlanned = 0, totalPlannedMoney = 0;
   const splitText = (done, planned) => done ? `✓ ${fmtHours(done)} erledigt · 📅 ${fmtHours(planned)} geplant` : '📅 alles noch geplant';
@@ -1980,7 +1994,7 @@ function renderStats() {
     const kmMoney = e.kmEnabled && e.kmRate ? p.paidKm * e.kmRate : 0;
     totalKmMoney += kmMoney;
     let money = null;
-    if (e.rate) { anyRate = true; money = (p.min / 60) * e.rate; totalMoney += money; }
+    if (e.rate) { anyRate = true; money = ((p.min + p.payout) / 60) * e.rate; totalMoney += money; }
     card.append(el('div', { class: 'stat-row' },
       el('i', { class: 'dot', style: `background:${e.color}` }),
       el('div', { class: 'grow' },
@@ -1989,6 +2003,7 @@ function renderStats() {
         p.travel ? el('small', { class: 'block' }, `🚗 ${fmtHours(p.travel)} Fahrzeit` + (p.paidTravel ? (p.paidTravel === p.travel ? ' (bezahlt, schon in den Stunden)' : ` (davon ${fmtHours(p.paidTravel)} bezahlt, schon in den Stunden)`) : ' (unbezahlt)')) : null,
         e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (p.paidKm < p.km ? ` (davon ${fmtKm(p.paidKm)} abrechenbar)` : '') + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
         p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
+        p.payout ? el('small', { class: 'block' }, `💶 + ${fmtHours(p.payout)} Überstunden ausgezahlt` + (e.rate ? ' (im Verdienst enthalten)' : '')) : null,
         el('div', { class: 'bar split' },
           el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
           el('div', { class: 'planned', style: `width:${(p.planned / max) * 100}%;--c:${e.color}` }))),
@@ -2004,8 +2019,8 @@ function renderStats() {
     if (!e.rate) {
       limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
     } else {
-      const earned = (per.get(e.id).min / 60) * e.rate;
-      const earnedDone = ((per.get(e.id).min - per.get(e.id).planned) / 60) * e.rate;
+      const earned = ((per.get(e.id).min + per.get(e.id).payout) / 60) * e.rate;
+      const earnedDone = ((per.get(e.id).min - per.get(e.id).planned + per.get(e.id).payout) / 60) * e.rate;
       const ratio = earned / e.limit;
       const level = ratio > 1 ? 'over' : ratio >= 0.85 ? 'near' : 'ok';
       const left = e.limit - earned;
@@ -2032,7 +2047,6 @@ function renderStats() {
     }
     return m;
   };
-  const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
   const today = todayISO();
   for (const e of workEmployers().filter(x => x.account)) {
     const acc = e.account;
@@ -2042,23 +2056,30 @@ function renderStats() {
     } else {
       const r = accountRange(e, mStart, mEnd, occ);
       const row = (label, value, cls = '') => el('div', { class: 'acc-row ' + cls }, el('span', {}, label), el('span', {}, value));
+      const adjRows = () => adjustmentsIn(e, mStart, mEnd).map(a => el('button', {
+        class: 'acc-row adj', type: 'button', onclick: () => openAdjustDialog(e, a),
+      }, el('span', {}, `${a.type === 'payout' ? '💶 Auszahlung' : '✏️ Korrektur'} ${fmtDM(a.date)}` + (a.note ? ` · ${a.note}` : '')),
+        el('span', {}, fmtSigned(adjEffect(a)))));
+      const adjButton = () => el('button', { class: 'btn secondary small full adj-btn', type: 'button', onclick: () => openAdjustDialog(e) }, '± Auszahlung / Korrektur');
       const sollText = `Soll: ${String(acc.amount).replace('.', ',')} Std. pro ${acc.unit === 'week' ? 'Woche' : 'Monat'}` + (acc.start > mStart ? ` · ab ${fmtShortDate(acc.start)} anteilig` : '');
       if (isNoMinus(e)) {
         const carry = plusCarry(e, year, month, occ);
-        const diff = r.ist - r.soll;
+        const diff = r.ist + r.adj - r.soll;
         const endPlus = Math.max(0, carry + diff);
         accCard.append(
           el('p', { class: 'hint' }, sollText + ' · keine Minusstunden'),
           row('Plus aus Vormonaten', fmtSigned(carry), carry > 0 ? 'plus' : ''),
           row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
           row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
-          plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '');
+          plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '',
+          ...adjRows());
         if (diff >= 0) accCard.append(row('Neue Plusstunden', fmtSigned(diff), diff > 0 ? 'plus' : ''));
         else if (carry > 0) accCard.append(row('Plus abgebaut', fmtHours(Math.round(Math.min(carry, -diff)))));
         accCard.append(row(`Plusstunden Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(endPlus), 'big ' + (endPlus > 0 ? 'plus' : '')));
         if (carry + diff < 0) {
           accCard.append(el('p', { class: 'hint' }, `Noch ${fmtHours(Math.round(-(carry + diff)))} bis zum Soll frei – kein Minus, es wird einfach nur ausgezahlt, was du arbeitest.`));
         }
+        accCard.append(adjButton());
         box.append(accCard);
         continue;
       }
@@ -2068,12 +2089,14 @@ function renderStats() {
         row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
         row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
         plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '',
-        row('Plus/Minus diesen Monat', fmtSigned(r.ist - r.soll), r.ist - r.soll >= 0 ? 'plus' : 'minus'));
+        ...adjRows(),
+        row('Plus/Minus diesen Monat', fmtSigned(r.ist + r.adj - r.soll), r.ist + r.adj - r.soll >= 0 ? 'plus' : 'minus'));
       if (today >= mStart && today <= mEnd && today >= acc.start) {
         const now = accountBalance(e, today, occ);
         accCard.append(row('Kontostand heute', fmtSigned(now), 'big ' + (now >= 0 ? 'plus' : 'minus')));
       }
       accCard.append(row(`Kontostand Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(end), 'big ' + (end >= 0 ? 'plus' : 'minus')));
+      accCard.append(adjButton());
     }
     box.append(accCard);
   }
@@ -2092,6 +2115,54 @@ function renderStats() {
       el('span', {}, '🚗 Unterwegs insgesamt'), el('span', {}, fmtHours(totalMin + totalUnpaidTravel))) : null));
   if (!anyRate) box.append(el('p', { class: 'hint center' }, 'Tipp: Trag unter Einstellungen einen Stundenlohn ein, dann siehst du hier auch den Verdienst.'));
 }
+
+/* ---------- Auszahlung / Korrektur ---------- */
+
+let adjEmployer = null, adjEditing = null;
+function openAdjustDialog(emp, adj = null) {
+  adjEmployer = emp; adjEditing = adj;
+  $('adj-title').textContent = `Stundenkonto · ${emp.name}`;
+  $('adj-type').value = adj ? adj.type : 'payout';
+  const { year, month } = statsMonth;
+  const mEnd = toISO(new Date(year, month + 1, 0)), mStart = toISO(new Date(year, month, 1));
+  const today = todayISO();
+  $('adj-date').value = adj ? adj.date : (today >= mStart && today <= mEnd ? today : mEnd);
+  $('adj-hours').value = adj ? hoursText(Math.abs(adj.min) * (adj.type === 'correction' && adj.min < 0 ? -1 : 1)) : '';
+  $('adj-note').value = adj ? adj.note || '' : '';
+  $('adj-delete').hidden = !adj;
+  updateAdjHint();
+  $('adj-dialog').showModal();
+}
+function updateAdjHint() {
+  const payout = $('adj-type').value === 'payout';
+  $('adj-hint').textContent = payout
+    ? 'Die Stunden gehen vom Stundenkonto ab und zählen im Monat der Auszahlung zum Verdienst (beim Minijob auch zur Grenze).'
+    : 'Plus- oder Minusstunden, z. B. „-2“ oder „3,5“ – etwa wenn dein Arbeitgeber einen anderen Stand hat.';
+}
+$('adj-type').addEventListener('change', updateAdjHint);
+$('adj-form').addEventListener('submit', e => {
+  e.preventDefault();
+  const type = $('adj-type').value;
+  let min = parseHours($('adj-hours').value, type === 'correction');
+  if (!min) { toast('Bitte die Stunden eintragen'); return; }
+  if (type === 'payout') min = Math.abs(min);
+  const data = { type, min, date: $('adj-date').value || todayISO(), note: $('adj-note').value.trim() };
+  const acc = adjEmployer.account;
+  acc.adjustments = acc.adjustments || [];
+  if (adjEditing) Object.assign(adjEditing, data);
+  else acc.adjustments.push({ id: uid(), ...data });
+  save();
+  $('adj-dialog').close();
+  render();
+});
+$('adj-delete').addEventListener('click', () => {
+  if (!confirm('Diesen Eintrag löschen?')) return;
+  adjEmployer.account.adjustments = adjEmployer.account.adjustments.filter(a => a !== adjEditing);
+  save();
+  $('adj-dialog').close();
+  render();
+});
+$('adj-cancel').addEventListener('click', () => $('adj-dialog').close());
 
 /* ---------- Einstellungen ---------- */
 
@@ -2830,7 +2901,7 @@ $('view-calendar').addEventListener('touchend', e => {
 });
 history.replaceState({ view: 'calendar', calMode: calMode(), date: view.selected }, '');
 
-['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog', 'check-dialog'].forEach(id => closeOnBackdrop($(id)));
+['shift-dialog', 'employer-dialog', 'plan-dialog', 'copy-dialog', 'bday-dialog', 'client-dialog', 'check-dialog', 'adj-dialog'].forEach(id => closeOnBackdrop($(id)));
 
 if (navigator.storage && navigator.storage.persist) navigator.storage.persist();
 if ('serviceWorker' in navigator && !NATIVE) {

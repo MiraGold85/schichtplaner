@@ -1,5 +1,5 @@
 // Offline-Cache. Bei Änderungen an der App die Versionsnummer erhöhen.
-const CACHE = 'schichtplaner-v25';
+const CACHE = 'schichtplaner-v26';
 const FILES = ['./', 'index.html', 'style.css', 'app.js', 'manifest.webmanifest', 'icons/icon-192.png', 'icons/icon-512.png'];
 
 self.addEventListener('install', e => {

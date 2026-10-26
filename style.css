@@ -366,3 +366,8 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .wf-row.current { font-weight: 700; }
 .wf-day { flex: 0 0 82px; }
 .wf-times { flex: 1; color: var(--muted); }
+
+/* Auszahlung / Korrektur */
+.acc-row.adj { width: 100%; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; font-size: .9rem; color: var(--text); }
+.adj-btn { margin-top: 10px; }
+#shift-type button { font-size: .9rem; padding: 0 4px; }

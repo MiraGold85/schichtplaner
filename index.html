@@ -208,6 +208,7 @@
         <button type="button" data-type="work">Arbeit</button>
         <button type="button" data-type="urlaub">🌴 Urlaub</button>
         <button type="button" data-type="krank">🤒 Krank</button>
+        <button type="button" data-type="abbau">⏳ Abbau</button>
       </div>
       <label class="field" id="private-fields" hidden>Was? <span class="opt">(z.&nbsp;B. Zahnarzt, Elternabend)</span>
         <input type="text" id="shift-title" maxlength="80" autocomplete="off">
@@ -234,9 +235,10 @@
         <label class="field" id="absence-until-field">Bis <span class="opt">(optional, für mehrere Tage)</span>
           <input type="date" id="absence-until">
         </label>
-        <label class="field">Gutschrift pro Tag in Std.
+        <label class="field" id="absence-credit-field">Gutschrift pro Tag in Std.
           <input type="text" id="absence-credit" inputmode="decimal" placeholder="z. B. 4 oder 4,5" autocomplete="off">
         </label>
+        <p class="hint" id="abbau-hint" hidden>⏳ Überstundenabbau: Du hast frei, eine feste Schicht entfällt – es wird nichts gutgeschrieben, die Stunden gehen also vom Stundenkonto ab.</p>
         <p class="hint">Bei mehreren Tagen werden nur deine Arbeitstage eingetragen (feste Wochenzeiten, sonst Mo–Fr) – ohne Feiertage.</p>
       </div>
       <label class="field">Notiz <span class="opt">(optional)</span>
@@ -392,6 +394,30 @@
         <button type="submit" class="btn">Speichern</button>
       </div>
       <a class="gcal" id="plan-gcal" target="_blank" rel="noopener" hidden>Als Serie in Google Kalender eintragen ↗</a>
+    </form>
+  </dialog>
+
+  <!-- Auszahlung / Korrektur -->
+  <dialog id="adj-dialog" class="sheet">
+    <form method="dialog" id="adj-form">
+      <h2 id="adj-title">Stundenkonto</h2>
+      <label class="field">Art
+        <select id="adj-type">
+          <option value="payout">💶 Überstunden ausgezahlt</option>
+          <option value="correction">✏️ Korrektur (+/−)</option>
+        </select>
+      </label>
+      <div class="row">
+        <label class="field">Stunden <input type="text" id="adj-hours" inputmode="text" placeholder="z. B. 10 oder 2,5" autocomplete="off"></label>
+        <label class="field">Datum <input type="date" id="adj-date"></label>
+      </div>
+      <label class="field">Notiz <span class="opt">(optional)</span><input type="text" id="adj-note" maxlength="100" autocomplete="off"></label>
+      <p class="hint" id="adj-hint"></p>
+      <div class="row actions">
+        <button type="button" class="btn danger" id="adj-delete" hidden>Löschen</button>
+        <button type="button" class="btn secondary" id="adj-cancel">Abbrechen</button>
+        <button type="submit" class="btn">Speichern</button>
+      </div>
     </form>
   </dialog>
 
