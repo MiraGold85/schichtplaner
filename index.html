@@ -348,6 +348,13 @@
           </label>
         </div>
         <button type="button" class="btn secondary small full" id="account-from-limit" hidden></button>
+        <label class="field">Bezahlung
+          <select id="account-pay">
+            <option value="hourly">nach gearbeiteten Stunden</option>
+            <option value="fixed">festes Monatsgehalt für die Sollstunden</option>
+          </select>
+          <span class="opt">Beim Minijob mit „Keine Minusstunden“ wird automatisch bis zur Grenze ausgezahlt, der Rest kommt aufs Konto.</span>
+        </label>
         <label class="check"><input type="checkbox" id="account-nominus"> Keine Minusstunden <span class="opt">(bezahlt wird, was du arbeitest – z.&nbsp;B. Minijob; nur Plus wird mitgenommen)</span></label>
         <div class="row">
           <label class="field">Zählt ab <input type="date" id="account-start"></label>

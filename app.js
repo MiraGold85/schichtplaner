@@ -651,7 +651,42 @@ function accountBalance(emp, to, occ) {
 const isNoMinus = emp => emp.account.noMinus ?? !!emp.limit;
 
 // Plusstunden, die aus den Monaten vor (year, month) mitgebracht werden – nie unter 0
+/* Bezahlung:
+   - nach Stunden (Standard): ausgezahlt wird, was gearbeitet wurde
+   - Festgehalt: ausgezahlt werden immer die Sollstunden, Differenz läuft übers Stundenkonto
+   - Minijob mit Stundenkonto ohne Minus: ausgezahlt wird bis zur Grenze; was darüber liegt, kommt als Plus aufs
+     Konto, in schwächeren Monaten wird aus dem Plus bis zur Grenze aufgefüllt */
+const isCapped = e => !!(e.limit && e.rate && e.account && isNoMinus(e));
+const isFixedPay = e => !!(e.account && e.account.pay === 'fixed' && !isCapped(e));
+
+// Minijob-Monat Schritt für Schritt ab Kontostart berechnen
+function cappedMonth(emp, year, month, occ) {
+  const cap = emp.limit / emp.rate * 60;
+  let carry = Math.max(0, (emp.account.opening || 0) * 60);
+  const s = fromISO(emp.account.start);
+  let res = null;
+  for (let y = s.getFullYear(), m = s.getMonth(); y < year || (y === year && m <= month); m === 11 ? (y++, m = 0) : m++) {
+    const from = toISO(new Date(y, m, 1)), to = toISO(new Date(y, m + 1, 0));
+    const r = accountRange(emp, from, to, occ);
+    const adj = adjustmentsIn(emp, from, to);
+    const corr = adj.filter(a => a.type !== 'payout').reduce((x, a) => x + a.min, 0);
+    const payout = adj.filter(a => a.type === 'payout').reduce((x, a) => x + a.min, 0);
+    const available = Math.max(0, carry + r.ist + corr);
+    const paidWork = Math.min(available, cap);
+    const extra = Math.min(payout, available - paidWork); // ausdrücklich ausgezahlte Plusstunden
+    res = { carryIn: carry, ist: r.ist, corr, payout: extra, available, cap, paid: paidWork + extra, carryOut: available - paidWork - extra };
+    carry = res.carryOut;
+  }
+  return res;
+}
+
 function plusCarry(emp, year, month, occ) {
+  if (isCapped(emp)) {
+    const prev = new Date(year, month - 1, 1);
+    const st = fromISO(emp.account.start);
+    if (prev < new Date(st.getFullYear(), st.getMonth(), 1)) return Math.max(0, (emp.account.opening || 0) * 60);
+    return cappedMonth(emp, prev.getFullYear(), prev.getMonth(), occ).carryOut;
+  }
   let carry = Math.max(0, (emp.account.opening || 0) * 60);
   const s = fromISO(emp.account.start);
   for (let y = s.getFullYear(), m = s.getMonth(); y < year || (y === year && m < month); m === 11 ? (y++, m = 0) : m++) {
@@ -1756,6 +1791,7 @@ function openEmployerDialog(emp, asCategory = false) {
   $('account-start').value = acc ? acc.start : todayISO();
   $('account-opening').value = acc && acc.opening ? String(acc.opening).replace('.', ',') : '';
   $('account-nominus').checked = acc ? isNoMinus(emp) : !!(emp && emp.limit);
+  $('account-pay').value = acc && acc.pay === 'fixed' ? 'fixed' : 'hourly';
   updateLimitSuggestion();
   const used = state.employers.map(e => e.color);
   employerColor = emp ? emp.color : (COLORS.find(c => !used.includes(c)) || COLORS[0]);
@@ -1788,7 +1824,8 @@ $('employer-form').addEventListener('submit', e => {
     const opening = parseHours($('account-opening').value, true);
     account = {
       amount, unit: $('account-unit').value, start: $('account-start').value || todayISO(),
-      opening: opening ? opening / 60 : 0, noMinus: $('account-nominus').checked,
+      opening: opening ? opening / 60 : 0, noMinus: $('account-nominus').checked, pay: $('account-pay').value,
+      adjustments: (editingEmployer && editingEmployer.account && editingEmployer.account.adjustments) || [],
     };
   }
   const items = $('employer-items').value.split('\n').map(x => x.trim()).filter(Boolean);
@@ -1981,6 +2018,26 @@ function renderStats() {
   for (const e of workEmployers()) {
     per.get(e.id).payout = e.account ? adjustmentsIn(e, mStart, mEnd).filter(a => a.type === 'payout').reduce((x, a) => x + a.min, 0) : 0;
   }
+  // Ausgezahlte Stunden (fürs Geld) je nach Bezahlmodell
+  for (const e of workEmployers()) {
+    const p = per.get(e.id);
+    p.paidMin = p.min + p.payout;
+    p.plannedMoneyMin = p.planned;
+    if (e.account && mEnd >= e.account.start) {
+      if (isCapped(e)) {
+        const cm = cappedMonth(e, year, month, occ);
+        p.capped = cm;
+        p.paidMin = cm.paid;
+        const doneAvail = Math.min(cm.cap, cm.carryIn + cm.corr + (cm.ist - (p.planned || 0))) + cm.payout;
+        p.plannedMoneyMin = Math.max(0, cm.paid - Math.max(0, doneAvail));
+      } else if (isFixedPay(e)) {
+        const r = accountRange(e, mStart, mEnd, occ);
+        p.fixedSoll = r.soll;
+        p.paidMin = r.soll + p.payout;
+        p.plannedMoneyMin = p.min ? r.soll * (p.planned / p.min) : 0;
+      }
+    }
+  }
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
   let totalMin = 0, totalMoney = 0, anyRate = false, totalTravel = 0, totalUnpaidTravel = 0, totalKmMoney = 0, totalPlanned = 0, totalPlannedMoney = 0;
   const splitText = (done, planned) => done ? `✓ ${fmtHours(done)} erledigt · 📅 ${fmtHours(planned)} geplant` : '📅 alles noch geplant';
@@ -1989,12 +2046,12 @@ function renderStats() {
     const p = per.get(e.id);
     totalMin += p.min;
     totalPlanned += p.planned;
-    if (e.rate) totalPlannedMoney += (p.planned / 60) * e.rate;
+    if (e.rate) totalPlannedMoney += (p.plannedMoneyMin / 60) * e.rate;
     totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
     const kmMoney = e.kmEnabled && e.kmRate ? p.paidKm * e.kmRate : 0;
     totalKmMoney += kmMoney;
     let money = null;
-    if (e.rate) { anyRate = true; money = ((p.min + p.payout) / 60) * e.rate; totalMoney += money; }
+    if (e.rate) { anyRate = true; money = (p.paidMin / 60) * e.rate; totalMoney += money; }
     card.append(el('div', { class: 'stat-row' },
       el('i', { class: 'dot', style: `background:${e.color}` }),
       el('div', { class: 'grow' },
@@ -2004,6 +2061,8 @@ function renderStats() {
         e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (p.paidKm < p.km ? ` (davon ${fmtKm(p.paidKm)} abrechenbar)` : '') + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
         p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
         p.payout ? el('small', { class: 'block' }, `💶 + ${fmtHours(p.payout)} Überstunden ausgezahlt` + (e.rate ? ' (im Verdienst enthalten)' : '')) : null,
+        p.fixedSoll != null ? el('small', { class: 'block' }, `💼 Festgehalt für ${fmtHours(Math.round(p.fixedSoll))}` + (Math.round(p.min) !== Math.round(p.fixedSoll) ? ' – Differenz übers Stundenkonto' : '')) : null,
+        p.capped && Math.round(p.capped.paid) !== Math.round(p.min) ? el('small', { class: 'block' }, `💶 ausgezahlt: ${fmtHours(Math.round(p.capped.paid))} (bis zur Minijob-Grenze, Rest übers Stundenkonto)`) : null,
         el('div', { class: 'bar split' },
           el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
           el('div', { class: 'planned', style: `width:${(p.planned / max) * 100}%;--c:${e.color}` }))),
@@ -2019,8 +2078,9 @@ function renderStats() {
     if (!e.rate) {
       limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
     } else {
-      const earned = ((per.get(e.id).min + per.get(e.id).payout) / 60) * e.rate;
-      const earnedDone = ((per.get(e.id).min - per.get(e.id).planned + per.get(e.id).payout) / 60) * e.rate;
+      const pe = per.get(e.id);
+      const earned = (pe.paidMin / 60) * e.rate;
+      const earnedDone = ((pe.paidMin - pe.plannedMoneyMin) / 60) * e.rate;
       const ratio = earned / e.limit;
       const level = ratio > 1 ? 'over' : ratio >= 0.85 ? 'near' : 'ok';
       const left = e.limit - earned;
@@ -2030,7 +2090,9 @@ function renderStats() {
         el('div', { class: 'bar big split' },
           el('div', { class: 'limit-' + level, style: `width:${Math.min(earnedDone / e.limit, 1) * 100}%` }),
           el('div', { class: 'planned limit-' + level, style: `width:${Math.max(0, Math.min(ratio, 1) - Math.min(earnedDone / e.limit, 1)) * 100}%` })),
-        el('p', { class: 'hint limit-text ' + level }, left >= 0
+        pe.capped && pe.capped.available > pe.capped.cap
+          ? el('p', { class: 'hint limit-text near' }, `Grenze erreicht – ${fmtHours(Math.round(pe.capped.available - pe.capped.cap))} gehen als Plus aufs Stundenkonto und werden in einem schwächeren Monat ausgezahlt.`)
+          : el('p', { class: 'hint limit-text ' + level }, left >= 0
           ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtHours(Math.floor((left / e.rate) * 60 / 15) * 15)}`
           : e.account
             ? `${fmtMoney(-left)} über der Grenze – das sind ${fmtHours(Math.round(-left / e.rate * 60))}, die als Plus auf dein Stundenkonto gehen (wenn das mit deinem Arbeitgeber so vereinbart ist).`
@@ -2062,6 +2124,24 @@ function renderStats() {
         el('span', {}, fmtSigned(adjEffect(a)))));
       const adjButton = () => el('button', { class: 'btn secondary small full adj-btn', type: 'button', onclick: () => openAdjustDialog(e) }, '± Auszahlung / Korrektur');
       const sollText = `Soll: ${String(acc.amount).replace('.', ',')} Std. pro ${acc.unit === 'week' ? 'Woche' : 'Monat'}` + (acc.start > mStart ? ` · ab ${fmtShortDate(acc.start)} anteilig` : '');
+      if (isCapped(e)) {
+        const cm = cappedMonth(e, year, month, occ);
+        const change = cm.carryOut - cm.carryIn;
+        accCard.append(
+          el('p', { class: 'hint' }, `Ausgezahlt wird bis zur Grenze: ${fmtHours(Math.round(cm.cap))} = ${fmtMoney(e.limit)} im Monat. Mehr Stunden gehen als Plus aufs Konto, in schwächeren Monaten wird daraus aufgefüllt.`),
+          row('Plus aus Vormonaten', fmtSigned(cm.carryIn), cm.carryIn > 0 ? 'plus' : ''),
+          row('Gearbeitet (inkl. geplant)', fmtHours(Math.round(cm.ist))),
+          plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '',
+          ...adjRows(),
+          row('Ausgezahlt diesen Monat', `${fmtHours(Math.round(cm.paid))} = ${fmtMoney(cm.paid / 60 * e.rate)}`));
+        if (change > 0) accCard.append(row('Neue Plusstunden', fmtSigned(change), 'plus'));
+        else if (change < 0) accCard.append(row('Aus dem Plus aufgefüllt', fmtHours(Math.round(-change))));
+        accCard.append(row(`Plusstunden Ende ${new Date(year, month, 1).toLocaleDateString('de-DE', { month: 'long' })}`, fmtSigned(cm.carryOut), 'big ' + (cm.carryOut > 0 ? 'plus' : '')));
+        if (cm.available < cm.cap) accCard.append(el('p', { class: 'hint' }, `Noch ${fmtHours(Math.round(cm.cap - cm.available))} bis zur Grenze frei.`));
+        accCard.append(adjButton());
+        box.append(accCard);
+        continue;
+      }
       if (isNoMinus(e)) {
         const carry = plusCarry(e, year, month, occ);
         const diff = r.ist + r.adj - r.soll;
@@ -2084,13 +2164,17 @@ function renderStats() {
         continue;
       }
       const end = accountBalance(e, mEnd, occ);
+      const diffMonth = r.ist + r.adj - r.soll;
+      const fixed = isFixedPay(e);
       accCard.append(
-        el('p', { class: 'hint' }, sollText),
+        el('p', { class: 'hint' }, sollText + (fixed ? ' · Festgehalt: bezahlt werden immer die Sollstunden' : '')),
         row('Soll diesen Monat', fmtHours(Math.round(r.soll))),
         row('Ist (inkl. geplant)', fmtHours(Math.round(r.ist))),
         plannedOf(e) ? row('davon noch geplant', fmtHours(Math.round(plannedOf(e))), 'sub') : '',
         ...adjRows(),
-        row('Plus/Minus diesen Monat', fmtSigned(r.ist + r.adj - r.soll), r.ist + r.adj - r.soll >= 0 ? 'plus' : 'minus'));
+        fixed && diffMonth < 0
+          ? row('Aus dem Stundenkonto ausgeglichen', fmtSigned(diffMonth), 'minus')
+          : row(fixed ? 'Aufs Stundenkonto' : 'Plus/Minus diesen Monat', fmtSigned(diffMonth), diffMonth >= 0 ? 'plus' : 'minus'));
       if (today >= mStart && today <= mEnd && today >= acc.start) {
         const now = accountBalance(e, today, occ);
         accCard.append(row('Kontostand heute', fmtSigned(now), 'big ' + (now >= 0 ? 'plus' : 'minus')));
