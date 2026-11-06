@@ -371,3 +371,12 @@ body.selecting { padding-bottom: calc(220px + env(safe-area-inset-bottom)); }
 .acc-row.adj { width: 100%; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; font-size: .9rem; color: var(--text); }
 .adj-btn { margin-top: 10px; }
 #shift-type button { font-size: .9rem; padding: 0 4px; }
+
+/* Stunden: Zeitraum & Filter */
+.small-seg { margin: 0 0 6px; }
+.small-seg button { min-height: 32px; font-size: .85rem; }
+.entry-day { font-weight: 700; font-size: .9rem; margin: 12px 0 4px; }
+.stat-entry { display: flex; align-items: center; gap: 10px; width: 100%; border: 0; border-top: 1px solid var(--line); background: none; text-align: left; padding: 9px 0; font-size: .9rem; }
+.stat-entry.done { opacity: .75; }
+.stat-entry .se-time { font-weight: 600; font-variant-numeric: tabular-nums; }
+.stat-entry .se-hours { color: var(--muted); white-space: nowrap; }

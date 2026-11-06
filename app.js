@@ -758,6 +758,8 @@ function closeOnBackdrop(dialog) {
 let currentView = 'calendar';
 const view = { year: new Date().getFullYear(), month: new Date().getMonth(), selected: todayISO() };
 const statsMonth = { year: view.year, month: view.month };
+let statsDate = todayISO(); // Stichtag der Stundenübersicht (Tag/Woche/Monat)
+let statsFilter = 'all';    // 'all' | 'done' | 'planned'
 
 function showView(name, fromNav = false) {
   if (selectMode && name !== 'calendar') setSelectMode(false); // vor dem neuen Verlaufseintrag beenden
@@ -1983,29 +1985,46 @@ setupPauseChips('plan-pause-chips', 'plan-pause', () => {});
 /* ---------- Stunden ---------- */
 
 function renderStats() {
-  const { year, month } = statsMonth;
-  $('stats-label').textContent = monthName(year, month);
+  const mode = state.settings.statsMode || 'month';
+  const sd = fromISO(statsDate);
+  const year = sd.getFullYear(), month = sd.getMonth();
+  statsMonth.year = year; statsMonth.month = month;
   const days = new Date(year, month + 1, 0).getDate();
+  // Zeitraum der Ansicht
+  const rangeStart = mode === 'month' ? toISO(new Date(year, month, 1)) : mode === 'week' ? weekStartOf(statsDate) : statsDate;
+  const rangeEnd = mode === 'month' ? toISO(new Date(year, month, days)) : mode === 'week' ? addDays(rangeStart, 6) : statsDate;
+  $('stats-label').textContent = mode === 'month' ? monthName(year, month)
+    : mode === 'week' ? `KW ${isoWeekNumber(rangeStart)} · ${fmtDM(rangeStart)} – ${fmtDM(rangeEnd)}`
+    : fmtDayTitle(statsDate) + (statsDate === todayISO() ? ' (heute)' : '');
+  $('stats-mode').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.mode === mode));
+  $('stats-filter').querySelectorAll('button').forEach(b => b.classList.toggle('active', b.dataset.filter === statsFilter));
+  const include = statsFilter === 'done' ? isDone : statsFilter === 'planned' ? notDone : null;
   // Termine pro Tag nur einmal berechnen (Stundenkonto rechnet ggf. viele Tage durch)
   const memo = new Map();
   const occ = d => { if (!memo.has(d)) memo.set(d, occurrencesOn(d)); return memo.get(d); };
-  const per = new Map(workEmployers().map(e => [e.id, { min: 0, planned: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0, paidKm: 0 }]));
-  for (let d = 1; d <= days; d++) {
-    const list = occ(toISO(new Date(year, month, d)));
+  const per = new Map(workEmployers().map(e => [e.id, { min: 0, planned: 0, minAll: 0, plannedAll: 0, count: 0, credit: 0, travel: 0, paidTravel: 0, km: 0, paidKm: 0 }]));
+  const entries = []; // für die Liste in Tag/Woche
+  for (let d = rangeStart; d <= rangeEnd; d = addDays(d, 1)) {
+    const list = occ(d);
     for (const o of list) {
       const p = per.get(o.employerId);
       if (!p) continue; // private Termine zählen nicht
+      if (include && !include(o)) continue;
       if (isCredit(o)) p.credit += occMinutes(o);
       else p.count++;
+      entries.push(o);
     }
-    for (const [id, t] of dayTotals(list)) {
+    for (const [id, t] of dayTotals(list, include)) {
       const p = per.get(id);
       if (!p) continue;
       p.min += paidMinutes(t); // Arbeit + bezahlte Fahrzeit
       p.travel += t.travel; p.paidTravel += t.paidTravel; p.km += t.km; p.paidKm += t.paidKm;
     }
-    for (const [id, t] of dayTotals(list, notDone)) if (per.has(id)) per.get(id).planned += paidMinutes(t);
+    // ungefiltert: für Verdienst-Modelle (Festgehalt, Minijob-Grenze) und „erledigt/geplant“
+    for (const [id, t] of dayTotals(list)) if (per.has(id)) per.get(id).minAll += paidMinutes(t);
+    for (const [id, t] of dayTotals(list, notDone)) if (per.has(id)) per.get(id).plannedAll += paidMinutes(t);
   }
+  for (const p of per.values()) p.planned = statsFilter === 'all' ? p.plannedAll : statsFilter === 'planned' ? p.min : 0;
 
   const box = $('stats');
   box.replaceChildren();
@@ -2016,25 +2035,29 @@ function renderStats() {
 
   const mStart = toISO(new Date(year, month, 1)), mEnd = toISO(new Date(year, month, days));
   for (const e of workEmployers()) {
-    per.get(e.id).payout = e.account ? adjustmentsIn(e, mStart, mEnd).filter(a => a.type === 'payout').reduce((x, a) => x + a.min, 0) : 0;
+    per.get(e.id).payout = mode === 'month' && e.account ? adjustmentsIn(e, mStart, mEnd).filter(a => a.type === 'payout').reduce((x, a) => x + a.min, 0) : 0;
   }
+  // Monatsgehalt (Festgehalt/Minijob mit Konto) lässt sich nicht auf Tag/Woche umlegen
+  const monthlyPay = e => mode !== 'month' && e.account && (isFixedPay(e) || isCapped(e));
+  // Verdienst je nach Filter: alle / bisher (erledigt) / noch geplant
+  const moneyMin = p => statsFilter === 'all' ? p.paidMin : statsFilter === 'done' ? p.paidMin - p.plannedMoneyMin : p.plannedMoneyMin;
   // Ausgezahlte Stunden (fürs Geld) je nach Bezahlmodell
   for (const e of workEmployers()) {
     const p = per.get(e.id);
-    p.paidMin = p.min + p.payout;
-    p.plannedMoneyMin = p.planned;
-    if (e.account && mEnd >= e.account.start) {
+    p.paidMin = p.minAll + p.payout;
+    p.plannedMoneyMin = p.plannedAll;
+    if (mode === 'month' && e.account && mEnd >= e.account.start) {
       if (isCapped(e)) {
         const cm = cappedMonth(e, year, month, occ);
         p.capped = cm;
         p.paidMin = cm.paid;
-        const doneAvail = Math.min(cm.cap, cm.carryIn + cm.corr + (cm.ist - (p.planned || 0))) + cm.payout;
+        const doneAvail = Math.min(cm.cap, cm.carryIn + cm.corr + (cm.ist - (p.plannedAll || 0))) + cm.payout;
         p.plannedMoneyMin = Math.max(0, cm.paid - Math.max(0, doneAvail));
       } else if (isFixedPay(e)) {
         const r = accountRange(e, mStart, mEnd, occ);
         p.fixedSoll = r.soll;
         p.paidMin = r.soll + p.payout;
-        p.plannedMoneyMin = p.min ? r.soll * (p.planned / p.min) : 0;
+        p.plannedMoneyMin = p.minAll ? r.soll * (p.plannedAll / p.minAll) : 0;
       }
     }
   }
@@ -2044,14 +2067,19 @@ function renderStats() {
   const card = el('div', { class: 'card' });
   for (const e of workEmployers()) {
     const p = per.get(e.id);
+    if (mode !== 'month' && !p.min && !p.count && !p.credit) continue; // Tag/Woche: nur wer etwas hat
     totalMin += p.min;
     totalPlanned += p.planned;
-    if (e.rate) totalPlannedMoney += (p.plannedMoneyMin / 60) * e.rate;
+    if (e.rate && statsFilter === 'all' && !monthlyPay(e)) totalPlannedMoney += (p.plannedMoneyMin / 60) * e.rate;
     totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
     const kmMoney = e.kmEnabled && e.kmRate ? p.paidKm * e.kmRate : 0;
     totalKmMoney += kmMoney;
     let money = null;
-    if (e.rate) { anyRate = true; money = (p.paidMin / 60) * e.rate; totalMoney += money; }
+    if (e.rate && !monthlyPay(e)) {
+      anyRate = true;
+      money = mode === 'month' ? (moneyMin(p) / 60) * e.rate : (p.min / 60) * e.rate;
+      totalMoney += money;
+    }
     card.append(el('div', { class: 'stat-row' },
       el('i', { class: 'dot', style: `background:${e.color}` }),
       el('div', { class: 'grow' },
@@ -2062,7 +2090,8 @@ function renderStats() {
         p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
         p.payout ? el('small', { class: 'block' }, `💶 + ${fmtHours(p.payout)} Überstunden ausgezahlt` + (e.rate ? ' (im Verdienst enthalten)' : '')) : null,
         p.fixedSoll != null ? el('small', { class: 'block' }, `💼 Festgehalt für ${fmtHours(Math.round(p.fixedSoll))}` + (Math.round(p.min) !== Math.round(p.fixedSoll) ? ' – Differenz übers Stundenkonto' : '')) : null,
-        p.capped && Math.round(p.capped.paid) !== Math.round(p.min) ? el('small', { class: 'block' }, `💶 ausgezahlt: ${fmtHours(Math.round(p.capped.paid))} (bis zur Minijob-Grenze, Rest übers Stundenkonto)`) : null,
+        p.capped && Math.round(p.capped.paid) !== Math.round(p.minAll) ? el('small', { class: 'block' }, `💶 ausgezahlt: ${fmtHours(Math.round(p.capped.paid))} (bis zur Minijob-Grenze, Rest übers Stundenkonto)`) : null,
+        monthlyPay(e) ? el('small', { class: 'block' }, '💼 Verdienst wird monatlich berechnet – siehe Monatsansicht') : null,
         el('div', { class: 'bar split' },
           el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
           el('div', { class: 'planned', style: `width:${(p.planned / max) * 100}%;--c:${e.color}` }))),
@@ -2072,8 +2101,28 @@ function renderStats() {
   }
   box.append(card);
 
-  // Minijob-Grenze: Balken pro Arbeitgeber mit Verdienstgrenze
-  for (const e of workEmployers().filter(x => x.limit)) {
+  // Tag/Woche: alle Einträge einzeln
+  if (mode !== 'month') {
+    const list = el('div', { class: 'card' }, el('h2', {}, 'Einträge'));
+    let lastDate = null;
+    for (const o of entries) {
+      const emp = employerById(o.employerId);
+      if (mode === 'week' && o.date !== lastDate) {
+        list.append(el('div', { class: 'entry-day' }, fromISO(o.date).toLocaleDateString('de-DE', { weekday: 'long', day: 'numeric', month: 'numeric' })));
+        lastDate = o.date;
+      }
+      const label = isCredit(o) ? (o.kind === 'holiday' ? '🎉 Feiertag' : `${ABSENCE_ICON[o.absence]} ${ABSENCE_LABEL[o.absence]}`) : `${o.start}–${o.end}`;
+      list.append(el('button', { class: 'stat-entry' + (!isCredit(o) && isDone(o) ? ' done' : ''), type: 'button', onclick: () => o.kind !== 'holiday' && openShiftDialog(o) },
+        el('i', { class: 'dot', style: `background:${emp.color}` }),
+        el('span', { class: 'grow' }, el('span', { class: 'se-time' }, label), ' ', emp.name + (clientName(o) ? ' · ' + clientName(o) : '')),
+        el('span', { class: 'se-hours' }, o.absence === 'abbau' ? 'frei' : fmtDuration(occMinutes(o)))));
+    }
+    if (!entries.length) list.append(el('p', { class: 'hint' }, statsFilter === 'done' ? 'Noch nichts erledigt.' : statsFilter === 'planned' ? 'Nichts mehr geplant.' : 'Keine Einträge.'));
+    box.append(list);
+  }
+
+  // Minijob-Grenze: Balken pro Arbeitgeber mit Verdienstgrenze (nur Monatsansicht)
+  for (const e of mode === 'month' ? workEmployers().filter(x => x.limit) : []) {
     const limitCard = el('div', { class: 'card' }, el('h2', {}, `Minijob-Grenze · ${e.name}`));
     if (!e.rate) {
       limitCard.append(el('p', { class: 'hint' }, 'Trag unter Einstellungen den Stundenlohn ein, dann siehst du hier, wie viel noch frei ist.'));
@@ -2110,7 +2159,7 @@ function renderStats() {
     return m;
   };
   const today = todayISO();
-  for (const e of workEmployers().filter(x => x.account)) {
+  for (const e of mode === 'month' ? workEmployers().filter(x => x.account) : []) {
     const acc = e.account;
     const accCard = el('div', { class: 'card' }, el('h2', {}, `Stundenkonto · ${e.name}`));
     if (mEnd < acc.start) {
@@ -2187,17 +2236,21 @@ function renderStats() {
 
   const sub = (label, value) => el('div', { class: 'total', style: 'font-weight:500;color:var(--muted);font-size:.95rem;margin-top:4px' },
     el('span', {}, label), el('span', {}, value));
+  const filterWord = { all: '', done: ' (erledigt)', planned: ' (geplant)' }[statsFilter];
+  const all = statsFilter === 'all';
   box.append(el('div', { class: 'card' },
-    el('div', { class: 'total' }, el('span', {}, 'Gesamt'), el('span', {}, fmtHours(totalMin))),
-    totalPlanned ? sub('✓ davon erledigt', fmtHours(totalMin - totalPlanned)) : null,
-    totalPlanned ? sub('📅 noch geplant', fmtHours(totalPlanned)) : null,
-    anyRate ? sub(totalPlanned ? 'Verdienst (inkl. geplant)' : 'Verdienst', fmtMoney(totalMoney)) : null,
-    anyRate && totalPlanned ? sub('bisher verdient', fmtMoney(totalMoney - totalPlannedMoney)) : null,
+    el('div', { class: 'total' }, el('span', {}, 'Gesamt' + filterWord), el('span', {}, fmtHours(totalMin))),
+    all && totalPlanned ? sub('✓ davon erledigt', fmtHours(totalMin - totalPlanned)) : null,
+    all && totalPlanned ? sub('📅 noch geplant', fmtHours(totalPlanned)) : null,
+    anyRate ? sub(all ? (totalPlanned ? 'Verdienst (inkl. geplant)' : 'Verdienst') : statsFilter === 'done' ? 'Verdienst bisher' : 'Verdienst noch geplant', fmtMoney(totalMoney)) : null,
+    anyRate && all && totalPlanned ? sub('bisher verdient', fmtMoney(totalMoney - totalPlannedMoney)) : null,
+    mode !== 'month' && workEmployers().some(e => e.rate && monthlyPay(e) && per.get(e.id).min)
+      ? el('p', { class: 'hint', style: 'margin:8px 0 0' }, '💼 Festgehalt und Minijob mit Stundenkonto werden monatlich abgerechnet – ihr Verdienst steht in der Monatsansicht.') : null,
     totalKmMoney ? sub('Kilometergeld', fmtMoney(totalKmMoney)) : null,
     totalTravel ? sub('Unbezahlte Fahrzeit', fmtHours(totalUnpaidTravel)) : null,
     totalTravel ? el('div', { class: 'total', style: 'margin-top:10px' },
       el('span', {}, '🚗 Unterwegs insgesamt'), el('span', {}, fmtHours(totalMin + totalUnpaidTravel))) : null));
-  if (!anyRate) box.append(el('p', { class: 'hint center' }, 'Tipp: Trag unter Einstellungen einen Stundenlohn ein, dann siehst du hier auch den Verdienst.'));
+  if (!workEmployers().some(e => e.rate)) box.append(el('p', { class: 'hint center' }, 'Tipp: Trag unter Einstellungen einen Stundenlohn ein, dann siehst du hier auch den Verdienst.'));
 }
 
 /* ---------- Auszahlung / Korrektur ---------- */
@@ -2971,8 +3024,37 @@ $('cal-mode').addEventListener('click', e => {
   save();
   renderCalendar();
 });
-$('stats-prev').addEventListener('click', () => { shiftMonth(statsMonth, -1); renderStats(); });
-$('stats-next').addEventListener('click', () => { shiftMonth(statsMonth, 1); renderStats(); });
+function stepStats(dir) {
+  const mode = state.settings.statsMode || 'month';
+  if (mode === 'month') { const d = fromISO(statsDate); statsDate = toISO(new Date(d.getFullYear(), d.getMonth() + dir, 1)); }
+  else statsDate = addDays(statsDate, mode === 'week' ? 7 * dir : dir);
+  renderStats();
+}
+$('stats-prev').addEventListener('click', () => stepStats(-1));
+$('stats-next').addEventListener('click', () => stepStats(1));
+$('stats-label').addEventListener('click', () => { statsDate = todayISO(); renderStats(); });
+$('stats-mode').addEventListener('click', e => {
+  const b = e.target.closest('button[data-mode]');
+  if (!b) return;
+  state.settings.statsMode = b.dataset.mode;
+  save();
+  renderStats();
+});
+$('stats-filter').addEventListener('click', e => {
+  const b = e.target.closest('button[data-filter]');
+  if (!b) return;
+  statsFilter = b.dataset.filter;
+  renderStats();
+});
+// Wischen in der Stundenübersicht
+let sTouchX = null, sTouchY = null;
+$('view-stats').addEventListener('touchstart', e => { sTouchX = e.touches[0].clientX; sTouchY = e.touches[0].clientY; }, { passive: true });
+$('view-stats').addEventListener('touchend', e => {
+  if (sTouchX == null) return;
+  const dx = e.changedTouches[0].clientX - sTouchX, dy = e.changedTouches[0].clientY - sTouchY;
+  sTouchX = null;
+  if (Math.abs(dx) > 70 && Math.abs(dx) > Math.abs(dy) * 1.5) stepStats(dx < 0 ? 1 : -1);
+});
 
 // Wischen im Kalender: je nach Ansicht Monat, Woche oder Tag weiter
 let touchX = null, touchY = null;

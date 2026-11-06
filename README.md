@@ -7,7 +7,7 @@ Handy-Web-App zum Planen von Arbeitszeiten für mehrere Arbeitgeber.
 - Einzeltermine mit Notiz (z. B. Kundin, Adresse) und Schnellwahl der zuletzt genutzten Uhrzeiten
 - Kalender als Tages-, Wochen- oder Monatsansicht (umschaltbar, wird gemerkt)
 - Zurück-Taste geht Schritt für Schritt zurück (Dialoge, Tagesansicht, Seiten)
-- Stunden- und Verdienstübersicht pro Monat, getrennt nach erledigt und noch geplant
+- Stunden- und Verdienstübersicht pro Tag, Woche oder Monat, Filter alle / erledigt / geplant, Einzelaufstellung der Einträge
 - Pausen pro Schicht bzw. fester Wochenzeit (frei wählbar in Minuten, wird von der Arbeitszeit abgezogen)
 - Private Termine (z. B. Zahnarzt), die nicht als Arbeitszeit zählen
 - Mehrere Tage im Kalender markieren und deren Termine auf einmal löschen (mit Rückgängig)
