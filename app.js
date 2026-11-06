@@ -2077,15 +2077,25 @@ function renderStats() {
   // Verdienst je nach Filter: alle / bisher (erledigt) / noch geplant
   const moneyMin = p => statsFilter === 'all' ? p.paidMin : statsFilter === 'done' ? p.paidMin - p.plannedMoneyMin : p.plannedMoneyMin;
   // Ausgezahlte Stunden (fürs Geld) je nach Bezahlmodell
-  // Tag/Woche bei Festgehalt bzw. Minijob-Konto: Monatsbetrag anteilig nach Stunden verteilen
-  const payCache = new Map();
-  const factorFor = (e, iso) => {
-    const key = e.id + iso.slice(0, 7);
-    if (!payCache.has(key)) {
-      const d = fromISO(iso), info = monthPayInfo(e, d.getFullYear(), d.getMonth(), occ);
-      payCache.set(key, info.minAll ? info.paidMin / info.minAll : 0);
+  // Tag/Woche: verdient ist, was gearbeitet wurde. Beim Minijob nur bis die Grenze im Monat erreicht ist –
+  // dafür zählt die App alle Stunden ab Monatsanfang mit; alles darüber geht als Plus aufs Stundenkonto.
+  const workedBefore = (e, iso) => {
+    let m = 0;
+    for (let d = iso.slice(0, 8) + '01'; d < iso; d = addDays(d, 1)) m += paidMinutes(dayTotals(occ(d)).get(e.id));
+    return m;
+  };
+  const cappedShare = (e, days) => {
+    const cap = e.limit / e.rate * 60;
+    let paid = 0, over = 0;
+    for (const [d, m] of days) {
+      if (!m) continue;
+      const all = paidMinutes(dayTotals(occ(d)).get(e.id)) || m;
+      const before = workedBefore(e, d);
+      const paidDay = Math.max(0, Math.min(cap, before + all) - before);
+      paid += paidDay * (m / all);
+      over += (all - paidDay) * (m / all);
     }
-    return payCache.get(key);
+    return { paid, over };
   };
   for (const e of workEmployers()) {
     const p = per.get(e.id);
@@ -2094,10 +2104,16 @@ function renderStats() {
     if (mode === 'month' && e.account && mEnd >= e.account.start) {
       const info = monthPayInfo(e, year, month, occ);
       Object.assign(p, { paidMin: info.paidMin, plannedMoneyMin: info.plannedMoneyMin, capped: info.capped, fixedSoll: info.fixedSoll });
-    } else if (mode !== 'month' && e.account && (isFixedPay(e) || isCapped(e))) {
-      p.shareMin = (p.days || []).reduce((x, [d, m]) => x + m * factorFor(e, d), 0);
-      p.sharePlannedMin = (p.daysPlanned || []).reduce((x, [d, m]) => x + m * factorFor(e, d), 0);
-      p.share = isFixedPay(e) ? 'Festgehalt' : 'Minijob-Monatsbetrag';
+    } else if (mode !== 'month' && e.account && isCapped(e)) {
+      const sh = cappedShare(e, p.days || []);
+      p.shareMin = sh.paid;
+      p.overMin = sh.over;
+      p.sharePlannedMin = cappedShare(e, p.daysPlanned || []).paid;
+      p.share = 'capped';
+    } else if (mode !== 'month' && isFixedPay(e)) {
+      p.shareMin = p.min;
+      p.sharePlannedMin = p.plannedAll;
+      p.share = 'fixed';
     }
   }
   const max = Math.max(1, ...[...per.values()].map(p => p.min));
@@ -2131,8 +2147,9 @@ function renderStats() {
         p.payout ? el('small', { class: 'block' }, `💶 + ${fmtHours(p.payout)} Überstunden ausgezahlt` + (e.rate ? ' (im Verdienst enthalten)' : '')) : null,
         p.fixedSoll != null ? el('small', { class: 'block' }, `💼 Festgehalt für ${fmtHours(Math.round(p.fixedSoll))}` + (Math.round(p.min) !== Math.round(p.fixedSoll) ? ' – Differenz übers Stundenkonto' : '')) : null,
         p.capped && Math.round(p.capped.paid) !== Math.round(p.minAll) ? el('small', { class: 'block' }, `💶 ausgezahlt: ${fmtHours(Math.round(p.capped.paid))} (bis zur Minijob-Grenze, Rest übers Stundenkonto)`) : null,
-        p.share ? el('small', { class: 'block' }, `💼 anteilig vom ${p.share} (nach Stunden)`) : null,
-        e.rate && statsFilter === 'all' && p.planned && money != null
+        p.share === 'capped' && p.overMin >= 1 ? el('small', { class: 'block' }, `⏳ ${fmtHours(Math.round(p.overMin))} über der Minijob-Grenze → Plus aufs Stundenkonto`) : null,
+        p.share === 'fixed' ? el('small', { class: 'block' }, '💼 Wert der gearbeiteten Stunden – das Festgehalt kommt am Monatsende, die Differenz läuft übers Stundenkonto') : null,
+        e.rate && statsFilter === 'all' && p.planned && p.min > p.planned && money != null
           ? el('small', { class: 'block' }, `✓ schon verdient: ${fmtMoney(money - (plannedMoneyMin / 60) * e.rate)}`) : null,
         el('div', { class: 'bar split' },
           el('div', { style: `width:${((p.min - p.planned) / max) * 100}%;background:${e.color}` }),
@@ -2287,7 +2304,7 @@ function renderStats() {
     anyRate ? sub(all ? (totalPlanned ? 'Verdienst (inkl. geplant)' : 'Verdienst') : statsFilter === 'done' ? 'Verdienst bisher' : 'Verdienst noch geplant', fmtMoney(totalMoney)) : null,
     anyRate && all && totalPlanned ? sub('bisher verdient', fmtMoney(totalMoney - totalPlannedMoney)) : null,
     mode !== 'month' && workEmployers().some(e => e.rate && per.get(e.id).share && per.get(e.id).min)
-      ? el('p', { class: 'hint', style: 'margin:8px 0 0' }, '💼 Festgehalt und Minijob mit Stundenkonto: anteilig nach deinen Stunden im Monat verteilt.') : null,
+      ? el('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Gezählt werden die gearbeiteten Stunden × Stundenlohn (beim Minijob bis zur Grenze). Was am Monatsende wirklich ausgezahlt wird, steht in der Monatsansicht.') : null,
     totalKmMoney ? sub('Kilometergeld', fmtMoney(totalKmMoney)) : null,
     totalTravel ? sub('Unbezahlte Fahrzeit', fmtHours(totalUnpaidTravel)) : null,
     totalTravel ? el('div', { class: 'total', style: 'margin-top:10px' },
