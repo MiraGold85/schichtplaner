@@ -2129,6 +2129,7 @@ function renderStats() {
     if (e.rate && statsFilter === 'all') totalPlannedMoney += (plannedMoneyMin / 60) * e.rate;
     totalTravel += p.travel; totalUnpaidTravel += p.travel - p.paidTravel;
     const kmMoney = e.kmEnabled && e.kmRate ? p.paidKm * e.kmRate : 0;
+    p.kmMoney = kmMoney;
     totalKmMoney += kmMoney;
     let money = null;
     if (e.rate && !monthlyPay(e)) {
@@ -2142,7 +2143,7 @@ function renderStats() {
         el('div', {}, e.name),
         el('small', {}, `${p.count} Termin${p.count === 1 ? '' : 'e'}` + (p.credit ? ` · davon ${fmtHours(p.credit)} Urlaub/Krank/Feiertag` : '')),
         p.travel ? el('small', { class: 'block' }, `🚗 ${fmtHours(p.travel)} Fahrzeit` + (p.paidTravel ? (p.paidTravel === p.travel ? ' (bezahlt, schon in den Stunden)' : ` (davon ${fmtHours(p.paidTravel)} bezahlt, schon in den Stunden)`) : ' (unbezahlt)')) : null,
-        e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (p.paidKm < p.km ? ` (davon ${fmtKm(p.paidKm)} abrechenbar)` : '') + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld` : '')) : null,
+        e.kmEnabled && p.km ? el('small', { class: 'block' }, `🛣️ ${fmtKm(p.km)}` + (p.paidKm < p.km ? ` (davon ${fmtKm(p.paidKm)} abrechenbar)` : '') + (kmMoney ? ` · ${fmtMoney(kmMoney)} Kilometergeld (netto, extra)` : '')) : null,
         p.planned ? el('small', { class: 'block' }, splitText(p.min - p.planned, p.planned)) : null,
         p.payout ? el('small', { class: 'block' }, `💶 + ${fmtHours(p.payout)} Überstunden ausgezahlt` + (e.rate ? ' (im Verdienst enthalten)' : '')) : null,
         p.fixedSoll != null ? el('small', { class: 'block' }, `💼 Festgehalt für ${fmtHours(Math.round(p.fixedSoll))}` + (Math.round(p.min) !== Math.round(p.fixedSoll) ? ' – Differenz übers Stundenkonto' : '')) : null,
@@ -2156,7 +2157,8 @@ function renderStats() {
           el('div', { class: 'planned', style: `width:${(p.planned / max) * 100}%;--c:${e.color}` }))),
       el('div', {},
         el('div', { class: 'stat-hours' }, fmtHours(p.min)),
-        money != null ? el('div', { class: 'stat-money' }, fmtMoney(money)) : null)));
+        money != null ? el('div', { class: 'stat-money' }, fmtMoney(money)) : null,
+        kmMoney ? el('div', { class: 'stat-money' }, `+ ${fmtMoney(kmMoney)} km`) : null)));
   }
   box.append(card);
 
@@ -2201,11 +2203,13 @@ function renderStats() {
         pe.capped && pe.capped.available > pe.capped.cap
           ? el('p', { class: 'hint limit-text near' }, `Grenze erreicht – ${fmtHours(Math.round(pe.capped.available - pe.capped.cap))} gehen als Plus aufs Stundenkonto und werden in einem schwächeren Monat ausgezahlt.`)
           : el('p', { class: 'hint limit-text ' + level }, left >= 0
-          ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtHours(Math.floor((left / e.rate) * 60 / 15) * 15)}`
+          ? `Noch ${fmtMoney(left)} frei – das sind etwa ${fmtDuration(Math.floor((left / e.rate) * 60 / 5) * 5)}`
           : e.account
             ? `${fmtMoney(-left)} über der Grenze – das sind ${fmtHours(Math.round(-left / e.rate * 60))}, die als Plus auf dein Stundenkonto gehen (wenn das mit deinem Arbeitgeber so vereinbart ist).`
             : `⚠️ ${fmtMoney(-left)} über der Grenze! Am besten Termine verschieben oder mit dem Arbeitgeber sprechen.`));
     }
+    const km = per.get(e.id).kmMoney;
+    if (km) limitCard.append(el('p', { class: 'hint' }, `🛣️ + ${fmtMoney(km)} Kilometergeld kommen netto obendrauf – sie zählen nicht zur Grenze.`));
     box.append(limitCard);
   }
   // Stundenkonto pro Arbeitgeber (geplant = ab Kontostart, noch nicht erledigt)
@@ -2305,7 +2309,10 @@ function renderStats() {
     anyRate && all && totalPlanned ? sub('bisher verdient', fmtMoney(totalMoney - totalPlannedMoney)) : null,
     mode !== 'month' && workEmployers().some(e => e.rate && per.get(e.id).share && per.get(e.id).min)
       ? el('p', { class: 'hint', style: 'margin:8px 0 0' }, 'Gezählt werden die gearbeiteten Stunden × Stundenlohn (beim Minijob bis zur Grenze). Was am Monatsende wirklich ausgezahlt wird, steht in der Monatsansicht.') : null,
-    totalKmMoney ? sub('Kilometergeld', fmtMoney(totalKmMoney)) : null,
+    totalKmMoney ? sub('Kilometergeld (netto, extra)', fmtMoney(totalKmMoney)) : null,
+    anyRate && totalKmMoney ? el('div', { class: 'total', style: 'margin-top:8px' },
+      el('span', {}, 'Auszahlung inkl. Kilometergeld' + (statsFilter === 'done' ? ' (bisher)' : statsFilter === 'planned' ? ' (geplant)' : '')),
+      el('span', {}, fmtMoney(totalMoney + totalKmMoney))) : null,
     totalTravel ? sub('Unbezahlte Fahrzeit', fmtHours(totalUnpaidTravel)) : null,
     totalTravel ? el('div', { class: 'total', style: 'margin-top:10px' },
       el('span', {}, '🚗 Unterwegs insgesamt'), el('span', {}, fmtHours(totalMin + totalUnpaidTravel))) : null));
